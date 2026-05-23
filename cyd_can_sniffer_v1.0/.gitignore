@@ -1,0 +1,20 @@
+# Arduino-specific files
+*.o
+*.a
+*.so
+*.elf
+*.bin
+*.hex
+*.eep
+*.map
+*.ino.d
+*.lst
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Other
+*~
+*.tmp
+*.bak
