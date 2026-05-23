@@ -96,7 +96,7 @@ bool canInit() {
 // =============================================================
 // ОБРАБОТКА ДАННЫХ CAN
 // =============================================================
-void processCanPacket(uint32_t rxId, byte len, byte* buf) {
+void processCanPacket(unsigned long rxId, byte len, byte* buf) {
   totalPkts++;
   // ищем ID в нашем массиве
   int idx = -1;
@@ -311,7 +311,7 @@ void drawMonitor() {
   btn(100, 195, 120, 35, C_BLUE, "BACK", 2);
 }
 
-void updateMonitor(uint32_t rxId, byte len, byte* buf) {
+void updateMonitor(unsigned long rxId, byte len, byte* buf) {
   if (rxId != monitorId) return;
   int v = (len > 0) ? (int)buf[0] : 0;
   brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
@@ -393,7 +393,7 @@ void loop() {
   if (mode == MODE_SCANNING && canOk) {
     // приём CAN-пакетов
     while (CAN.checkReceive() == CAN_MSGAVAIL) {
-      uint32_t rxId; byte len = 0; byte buf[8];
+      unsigned long rxId; byte len = 0; byte buf[8];
       CAN.readMsgBufID(&rxId, &len, buf);
       processCanPacket(rxId, len, buf);
     }
@@ -415,7 +415,7 @@ void loop() {
 
   if (mode == MODE_MONITOR && canOk) {
     while (CAN.checkReceive() == CAN_MSGAVAIL) {
-      uint32_t rxId; byte len = 0; byte buf[8];
+      unsigned long rxId; byte len = 0; byte buf[8];
       CAN.readMsgBufID(&rxId, &len, buf);
       updateMonitor(rxId, len, buf);
     }
