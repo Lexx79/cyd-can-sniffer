@@ -1,13 +1,17 @@
 /**
- * ESP32-2432S028 (CYD) — CAN Brightness Hunter
+ * ESP32-2432S028 (CYD) — CAN ID Hunter
+ *
+ * Подключение MCP2515 (без пайки!):
+ *   SPI:     2x8 хедер (SCK=18, MOSI=23, MISO=19, 5V, GND)
+ *   CS:      разъём P3, пин 3 (GPIO22)
+ *   CAN_H/L: OBD2 пины 6/14
  */
 #include <SPI.h>
 #include <mcp2515_can.h>
 #include <TFT_eSPI.h>
 
 #define TOUCH_CAL { 320, 3424, 356, 3385, 1 }
-#define PIN_CAN_CS    32
-#define PIN_LED_PWM   26
+#define PIN_CAN_CS    22
 #define CAN_SPEED     CAN_500KBPS
 
 mcp2515_can CAN(PIN_CAN_CS);
@@ -54,7 +58,6 @@ unsigned long lastTimerMs = 0;
 
 uint32_t monitorId = 0;
 int brightnessVal = 0;
-int pwmVal = 0;
 
 #define PER_PAGE 5
 int listPage = 0;
@@ -106,8 +109,6 @@ void sortByChanges();
 // =============================================================
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_LED_PWM, OUTPUT);
-  analogWrite(PIN_LED_PWM, 0);
   tft.begin(); tft.setRotation(1); tft.fillScreen(C_BG);
   tft.setTouch(tcal);
   canOk = canInit();
@@ -130,8 +131,6 @@ void loop() {
       totalPkts++;
       int v = buf[0];
       brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
-      pwmVal = map(brightnessVal, 0, 100, 0, 255);
-      analogWrite(PIN_LED_PWM, pwmVal);
       redrawNeeded = true;
     }
   }
@@ -317,7 +316,7 @@ void drawMonitor() {
   // Info line
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_LIST_BG);
-  sprintf(tmp, "ID:0x%03lX  PWM:%d/255", monitorId, pwmVal);
+  sprintf(tmp, "ID:0x%03lX  val:%d", monitorId, brightnessVal);
   centerText(tmp, by + bh - 14, C_GREY, C_LIST_BG, 1);
 
   // Bottom hint
@@ -372,13 +371,11 @@ void handleTouch() {
         if (idx < sortedCount) {
           int si = sortedIdx[idx];
           monitorId = scanBuf[si].id;
-          brightnessVal = 0; pwmVal = 0;
-          analogWrite(PIN_LED_PWM, 0);
+          brightnessVal = 0;
           if (scanBuf[si].prevLen >= 1) {
             int v = scanBuf[si].prev[0];
             brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
-            pwmVal = map(brightnessVal, 0, 100, 0, 255);
-            analogWrite(PIN_LED_PWM, pwmVal);
+
           }
           mode = MODE_MONITOR; drawScreen();
         }

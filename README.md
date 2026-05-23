@@ -1,13 +1,12 @@
-# CAN Brightness Hunter — ESP32 CYD
+# CAN ID Hunter — ESP32 CYD
 
-**Find your car's dashboard illumination CAN ID, then drive an LED strip.**
+**Find your car's dashboard illumination CAN ID.**
 
 [![ESP32](https://img.shields.io/badge/ESP32-2432S028-blue)](https://github.com/espressif/arduino-esp32)
 [![Version](https://img.shields.io/badge/version-1.0-success)](.)
 
 Firmware for **ESP32-2432S028 (Cheap Yellow Display)** + **MCP2515+TJA1050** CAN module.
-Designed to sniff CAN bus for the elusive **dashboard/pedal illumination** CAN ID — the one that
-controls interior brightness when you rotate the dimmer wheel.
+Scans CAN bus for 30 seconds, finds the ID that changes when you rotate the dimmer wheel.
 
 > Many Honda (Accord 8, 2008-2012) illumination IDs are **not documented** in openpilot/opendbc.
 > This tool finds them in 30 seconds.
@@ -16,81 +15,70 @@ controls interior brightness when you rotate the dimmer wheel.
 
 ## How It Works
 
-1. **START SCAN** → listens to CAN bus for 30s, counts every ID and how many times its data changed
-2. **LIST** → IDs sorted by "change count" (most active → top). The real illumination ID will
-   jump to the top because you were rotating the wheel.
-3. Tap an ID → **MONITOR** → first byte drives brightness indicator on screen AND an external LED strip
+1. **START SCAN** → listens to CAN bus for 30s, counts every ID and data changes
+2. **LIST** → IDs sorted by "change count" (most active → top). The illumination ID jumps to the top.
+3. Tap an ID → **MONITOR** → first byte displayed as brightness indicator
 4. Wrong ID? Tap BACK, pick the next one.
-
-Screenshots
-```
-┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
-│     CAN HUNTER      │  │     SCANNING...     │  │FOUND ID by changes1/4│
-│ ● MCP2515: OK 500K  │  │ Listening...  23s   │  │┌───────────────────┐│
-│                     │  │ ○ Rotate wheel NOW  │  ││0x160 rx:214 chg:52││
-│ ┌─────────────────┐ │  │ ████████░░░░░░░░░░░ │  ││0x374 rx:188 chg:3 ││
-│ │ 1 Turn ign. ON  │ │  │                     │  ││0x130 rx:92  chg:1 ││
-│ │ 2 START SCAN    │ │  │     ┌────────┐      │  ││...                ││
-│ │ 3 Rotate wheel  │ │  │     │  STOP  │      │  │└───────────────────┘│
-│ │ 4 Tap ID        │ │  │     └────────┘      │  │ [<] [>] [SCAN AGAIN]│
-│ └─────────────────┘ │  └─────────────────────┘  └─────────────────────┘
-│     ┌──────────┐    │
-│     │START SCAN│    │
-│     └──────────┘    │
-└─────────────────────┘
-```
 
 ---
 
 ## Hardware
 
-### Wiring
+### Connecting MCP2515 (no soldering!)
 
-| MCP2515 | ESP32 CYD | OBD2 Pin |
-|---------|-----------|----------|
-| VCC     | 5V        | 16 (12V via 5V reg) |
-| GND     | GND       | 4 / 5 |
-| SCK     | GPIO 18   | — |
-| MOSI    | GPIO 23   | — |
-| MISO    | GPIO 19   | — |
-| CS      | GPIO 32   | — |
-| CAN_H   | —         | 6 |
-| CAN_L   | —         | 14 |
+| MCP2515 | ESP32 CYD | Connector |
+|---------|-----------|-----------|
+| VCC     | 5V        | 2×8 header (back) |
+| GND     | GND       | 2×8 header (back) |
+| SCK     | GPIO 18   | 2×8 header (back) |
+| MOSI    | GPIO 23   | 2×8 header (back) |
+| MISO    | GPIO 19   | 2×8 header (back) |
+| **CS**  | **GPIO 22** | **P3, pin 3** |
 
-### LED strip
+### OBD2 → MCP2515
+- CAN_H → pin 6
+- CAN_L → pin 14
+- GND → pin 4 / 5
+- +12V → not connected (MCP2515 powered from CYD 5V)
+
+### CYD connectors used
 
 ```
-GPIO26 → 100Ω ── Gate IRLZ44N ── Drain ── LED strip (-)
-                  │                       
-                10kΩ               LED strip (+) → +12V (fused 1-2A)
-                  │                       
-                 GND              Supply GND ── Source
+       ┌─────────────────────────────┐
+       │     2×8 header (back)       │
+       │  5V GND MISO(19) SCK(18)    │
+       │         MOSI(23)            │
+       └─────────────────────────────┘
+               │
+               │
+       P3: ┌───┴──────────────┐
+           │ 1: GND   2: 35   │
+           │ 3: GPIO22 ← CS   │ ← one wire!
+           │ 4: 21            │
+           └──────────────────┘
 ```
 
-**MOSFET: IRLZ44N** (logic-level, fully on at 3.3V)
+**Result: only one extra wire needed** — from MCP2515 CS to P3 pin 3 (GPIO22). Everything else through the standard 2×8 SPI header.
 
 ---
 
-## Pin Notes
+## Pin Table
 
-All pins are free to use except **GPIO 4** (TFT_RST/reset).
-
-| Pin | Project Use | Can Change? |
-|-----|-------------|-------------|
-| 18  | SPI SCK | No (display + CAN) |
-| 19  | SPI MISO | No |
-| 23  | SPI MOSI | No |
-| 4   | TFT_RST | **DO NOT TOUCH** |
-| 5   | SD_CS | Yes (free) |
-| 22  | CAN_CS alt | Yes |
-| 26  | LED_PWM | Yes |
-| 32  | CAN_CS | Yes |
+| Pin | Project Use | Connector |
+|-----|-------------|-----------|
+| 22  | CAN_CS | P3 (pin 3) |
+| 18  | SPI SCK | 2×8 header |
+| 19  | SPI MISO | 2×8 header |
+| 23  | SPI MOSI | 2×8 header |
+| 4   | TFT_RST | DO NOT TOUCH |
+| 5   | SD_CS | Free |
+| 26  | Free | Back pin |
 
 ---
 
 ## Known Illumination IDs (from opendbc)
 
-Only exterior lights are confirmed in opendbc — **no Honda dashboard dimming ID is publicly documented**:
+Only exterior lights are confirmed — **no Honda dashboard dimming ID is publicly documented**:
 
 | ID (hex) | Module | Signals |
 |----------|--------|---------|
@@ -107,8 +95,6 @@ Toyota has `METER_SLIDER_BRIGHTNESS_PCT` at 0x610 — Honda doesn't.
 |-----------|--------|
 | ESP32-2432S028 (CYD) | ✅ Have |
 | MCP2515 + TJA1050 | 🚚 Ordered (Ozon) |
-| IRLZ44N | ❌ Needed |
-| LED strip 12V | ❌ Needed |
 
 **Libraries (Arduino IDE):**
 - TFT_eSPI-CYD (or TFT_eSPI)
@@ -122,18 +108,7 @@ Toyota has `METER_SLIDER_BRIGHTNESS_PCT` at 0x610 — Honda doesn't.
 ⚠️ **The CAN bus connects to ABS, SRS (airbags), and engine ECU.**
 - **RECEIVE ONLY** — the sketch never transmits
 - Disconnect before plugging/unplugging hardware
-- Fuse the LED strip at 1-2A
 - Test on a bench first
-
----
-
-## Future Ideas
-
-- [ ] Save found ID to EEPROM
-- [ ] SD card CAN logging (GPIO5)
-- [ ] Dual-channel LED (passenger + driver)
-- [ ] Animation modes (turn signal sync, fade in/out)
-- [ ] Auto-detect brightness byte position
 
 ---
 
@@ -155,6 +130,6 @@ D:\Gemini\cyd_can_sniffer\
 
 ## License
 
-MIT — feel free to use, modify, share.
+MIT
 
 **Author:** Kiro (⚡) — May 2026
