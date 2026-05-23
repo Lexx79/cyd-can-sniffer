@@ -1,52 +1,59 @@
 /**
- * ESP32-2432S028 (CYD) — CAN Brightness Hunter
+ * ESP32-2432S028 (CYD) — CAN ID Hunter v1.0
+ *
+ * Подключение MCP2515 (требуется пайка):
+ *   SPI:     ножки ESP32 (SCK=18, MOSI=23, MISO=19)
+ *   5V/GND:  площадки S3/S1 сзади платы
+ *   CS:      разъём P3, пин 3 (GPIO22) — без пайки!
+ *   CAN_H/L: OBD2 пины 6/14
  */
 #include <SPI.h>
 #include <mcp2515_can.h>
 #include <TFT_eSPI.h>
 
 #define TOUCH_CAL { 320, 3424, 356, 3385, 1 }
-#define PIN_CAN_CS    32
-#define PIN_LED_PWM   26
+#define PIN_CAN_CS    22
 #define CAN_SPEED     CAN_500KBPS
 
 mcp2515_can CAN(PIN_CAN_CS);
 TFT_eSPI tft;
 uint16_t tcal[5] = TOUCH_CAL;
 
-// ── Цветовая схема ──
-#define C_BG        TFT_BLACK
-#define C_HEADER    0x1A3C      // тёмно-синий морской
-#define C_DIVIDER   0x2945      // разделитель
-#define C_LIST_BG   0x0841      // фон строк списка
-#define C_ACCENT    TFT_CYAN
-#define C_WARM      TFT_YELLOW
-#define C_GREEN     TFT_GREEN
-#define C_RED       TFT_RED
-#define C_GREY      0x7BEF
-#define C_BLUE      0x33DF      // ярко-голубой для кнопок
-#define C_ORANGE    0xFDA0      // оранжевый для анимации
-#define C_WHITE     TFT_WHITE
+// =============================================================
+// ЦВЕТА UI
+// =============================================================
+#define C_BG         TFT_BLACK
+#define C_HEADER     0x1A3C
+#define C_DIVIDER    0x2945
+#define C_LIST_BG    0x0841
+#define C_ACCENT     TFT_CYAN
+#define C_WARM       TFT_YELLOW
+#define C_GREEN      TFT_GREEN
+#define C_RED        TFT_RED
+#define C_BLUE       0x29FF
+#define C_TEXT       TFT_WHITE
+#define C_DIM        0xAD55
 
-#define SCR_W    320
-#define SCR_H    240
-#define HDR_H    24
-#define TOUCH_D  250
+// =============================================================
+// РЕЖИМЫ
+// =============================================================
+enum AppMode { MODE_IDLE, MODE_SCANNING, MODE_LIST, MODE_MONITOR };
+AppMode mode = MODE_IDLE;
 
-enum Mode { MODE_IDLE, MODE_SCANNING, MODE_LIST, MODE_MONITOR };
-Mode mode = MODE_IDLE;
-
-#define MAX_SCAN_IDS 80
-struct ScanEntry {
-  uint32_t id; uint32_t count; uint32_t changes;
-  byte prev[8]; byte prevLen; bool active;
+// =============================================================
+// ДАННЫЕ СКАНИРОВАНИЯ
+// =============================================================
+#define MAX_IDS 200
+struct CanIdInfo {
+  uint32_t id;
+  uint32_t count;
+  uint32_t changes;
+  byte lastData[8];
+  bool valid;
 };
-ScanEntry scanBuf[MAX_SCAN_IDS];
-int scanCount = 0;
-int sortedIdx[MAX_SCAN_IDS];
-int sortedCount = 0;
+CanIdInfo ids[MAX_IDS];
+int idCount = 0;
 
-bool canOk = false;
 unsigned long scanStartMs = 0;
 unsigned long scanDurationMs = 30000;
 uint32_t totalPkts = 0;
@@ -54,355 +61,31 @@ unsigned long lastTimerMs = 0;
 
 uint32_t monitorId = 0;
 int brightnessVal = 0;
-int pwmVal = 0;
 
 #define PER_PAGE 5
 int listPage = 0;
-bool redrawNeeded = true;
-bool pulseState = false;
-unsigned long lastPulseMs = 0;
 
-// ── helpers ──
-void centerText(const char *s, int y, int fg, int bg, uint8_t sz) {
-  tft.setTextSize(sz);
-  tft.setTextColor(fg, bg);
-  tft.drawString(s, (SCR_W - tft.textWidth(s)) / 2, y);
-}
-void btn(const char *s, int bx, int by, int bw, int bh, int fg, int bg, uint8_t sz) {
-  tft.fillRoundRect(bx, by, bw, bh, 5, bg);
-  tft.drawRoundRect(bx, by, bw, bh, 5, fg);  // border
-  tft.setTextSize(sz);
-  tft.setTextColor(fg, bg);
-  int tx = bx + (bw - tft.textWidth(s)) / 2;
-  int ty = by + (bh - sz * 8) / 2;
-  tft.drawString(s, tx, ty > by ? ty : by + 2);
-}
-bool hit(int x, int y, int bx, int by, int bw, int bh) {
-  return (x >= bx && x <= bx + bw && y >= by && y <= by + bh);
-}
-void drawDivider(int y) {
-  tft.fillRect(0, y, SCR_W, 2, C_DIVIDER);
-}
-void drawHeader(const char *s, const char *right) {
-  tft.fillScreen(C_BG);
-  tft.fillRect(0, 0, SCR_W, HDR_H, C_HEADER);
-  tft.setTextSize(1);
-  tft.setTextColor(C_WHITE, C_HEADER);
-  if (s) tft.drawString(s, 8, 7);
-  if (right) {
-    tft.setTextColor(C_ACCENT, C_HEADER);
-    tft.drawString(right, SCR_W - 8 - strlen(right) * 6, 7);
-  }
-  drawDivider(HDR_H);
-}
-
-// prototypes
-void drawScreen(); void handleTouch(); bool canInit();
-int  findOrCreate(uint32_t id); void addToScan(uint32_t id, byte len, byte *data);
-void sortByChanges();
+bool canOk = false;
 
 // =============================================================
 // SETUP
 // =============================================================
 void setup() {
   Serial.begin(115200);
-  pinMode(PIN_LED_PWM, OUTPUT);
-  analogWrite(PIN_LED_PWM, 0);
   tft.begin(); tft.setRotation(1); tft.fillScreen(C_BG);
   tft.setTouch(tcal);
-  canOk = canInit();
-  drawScreen();
-}
 
-// =============================================================
-// LOOP
-// =============================================================
-void loop() {
-  yield();
-  unsigned long now = millis();
-
-  // CAN
-  if (canOk && CAN.checkReceive() == CAN_MSGAVAIL) {
-    unsigned long rxId; byte len=0; byte buf[8]={0};
-    CAN.readMsgBufID(&rxId, &len, buf);
-    if (mode == MODE_SCANNING) { totalPkts++; addToScan(rxId, len, buf); }
-    if (mode == MODE_MONITOR && rxId == monitorId && len >= 1) {
-      totalPkts++;
-      int v = buf[0];
-      brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
-      pwmVal = map(brightnessVal, 0, 100, 0, 255);
-      analogWrite(PIN_LED_PWM, pwmVal);
-      redrawNeeded = true;
-    }
-  }
-
-  // Scanning
-  if (mode == MODE_SCANNING) {
-    if (now - lastTimerMs >= 250) {
-      lastTimerMs = now;
-      unsigned long remain = (scanStartMs + scanDurationMs > now)
-        ? (scanStartMs + scanDurationMs - now) / 1000 : 0;
-      int pct = ((now - scanStartMs) * 300) / scanDurationMs;
-      if (pct > 300) pct = 300;
-      tft.fillRect(10, 108, pct, 20, C_ACCENT);
-      char tmp[24];
-      sprintf(tmp, "Listening...  %2lus", (unsigned long)remain);
-      tft.setTextSize(1); tft.setTextColor(C_WHITE, C_BG);
-      tft.fillRect(10, 50, 300, 10, C_BG);
-      tft.drawString(tmp, 10, 52);
-    }
-    // Pulse dot every ~500ms
-    if (now - lastPulseMs >= 500) {
-      lastPulseMs = now;
-      pulseState = !pulseState;
-      tft.fillCircle(18, 76, 4, pulseState ? C_GREEN : C_HEADER);
-    }
-    if (now - scanStartMs >= scanDurationMs) {
-      mode = MODE_LIST; sortByChanges(); listPage = 0; drawScreen();
-    }
-  }
-
-  if (redrawNeeded) { redrawNeeded = false; drawScreen(); }
-  handleTouch();
-}
-
-// =============================================================
-// IDLE
-// =============================================================
-void drawIdle() {
-  tft.fillScreen(C_BG);
-  tft.fillRect(0, 0, SCR_W, 32, C_HEADER);
-  tft.setTextSize(2);
-  tft.setTextColor(C_ACCENT, C_HEADER);
-  centerText("CAN HUNTER", 8, C_ACCENT, C_HEADER, 2);
-  drawDivider(32);
-
-  // Status with dot
-  tft.fillCircle(18, 48, 5, canOk ? C_GREEN : C_RED);
-  tft.setTextSize(1);
-  tft.setTextColor(canOk ? C_GREEN : C_RED, C_BG);
-  tft.drawString(canOk ? "MCP2515: OK  (500K)" : "MCP2515: NOT CONNECTED", 30, 44);
-
-  // Instruction box
-  int iy = 66;
-  tft.drawRoundRect(8, iy, 304, 76, 4, C_LIST_BG);
-  tft.setTextSize(1);
-  tft.setTextColor(C_WHITE, C_BG);
-  tft.drawString("1  Turn ignition ON", 20, iy + 10);
-  tft.drawString("2  Press START SCAN", 20, iy + 26);
-  tft.drawString("3  Rotate dimmer wheel", 20, iy + 42);
-  tft.drawString("4  Tap ID from the list", 20, iy + 58);
-
-  btn("START SCAN", 60, 180, 200, 42, TFT_BLACK, C_GREEN, 2);
-}
-
-// =============================================================
-// SCANNING
-// =============================================================
-void drawScanning() {
-  drawHeader("SCANNING...", NULL);
-
-  // Status line
-  tft.setTextSize(1);
-  tft.setTextColor(C_WHITE, C_BG);
-  char tmp[30];
-  sprintf(tmp, "Listening...  %2lus", (unsigned long)(scanDurationMs / 1000));
-  tft.drawString(tmp, 10, 52);
-
-  // Pulse dot
-  tft.fillCircle(18, 76, 4, C_GREEN);
-
-  // Hint
-  tft.setTextColor(C_GREY, C_BG);
-  tft.drawString("Rotate dimmer wheel NOW", 30, 72);
-
-  // Progress bar
-  tft.fillRect(10, 108, 300, 20, C_LIST_BG);
-  tft.drawRect(10, 108, 300, 20, C_WHITE);
-  tft.fillRect(10, 108, 0, 20, C_ACCENT);
-
-  btn("STOP", 100, 160, 120, 32, TFT_BLACK, C_RED, 2);
-}
-
-// =============================================================
-// LIST
-// =============================================================
-void drawList() {
-  int pages = sortedCount > 0 ? (sortedCount + PER_PAGE - 1) / PER_PAGE : 1;
-  char pageStr[10];
-  sprintf(pageStr, "%d/%d", listPage + 1, pages);
-  drawHeader("FOUND IDs (by changes)", pageStr);
-
-  int start = listPage * PER_PAGE;
-  int itemsOnPage = sortedCount - start;
-  if (itemsOnPage > PER_PAGE) itemsOnPage = PER_PAGE;
-
-  if (sortedCount == 0) {
-    tft.setTextSize(1);
-    tft.setTextColor(C_GREY, C_BG);
-    centerText("No CAN messages received.", 90, C_GREY, C_BG, 1);
-    centerText("Check connection and try again.", 110, C_GREY, C_BG, 1);
-  } else {
-    int ry = HDR_H + 10;
-    for (int i = 0; i < itemsOnPage; i++) {
-      int idx = start + i;
-      int si = sortedIdx[idx];
-      ScanEntry *e = &scanBuf[si];
-
-      // Row bg
-      int rowH = 30;
-      uint16_t rowBg = (i % 2 == 0) ? C_BG : C_LIST_BG;
-      tft.fillRoundRect(6, ry, 308, rowH, 4, rowBg);
-      tft.drawRoundRect(6, ry, 308, rowH, 4, C_DIVIDER);
-
-      // ID (large)
-      tft.setTextSize(2);
-      tft.setTextColor(C_ACCENT, rowBg);
-      char buf[12];
-      sprintf(buf, "%03lX", e->id);
-      tft.drawString(buf, 14, ry + 6);
-
-      // Stats
-      tft.setTextSize(1);
-      sprintf(buf, "rx:%d  chg:%d", e->count, e->changes);
-      tft.setTextColor(C_GREY, rowBg);
-      tft.drawString(buf, 110, ry + 5);
-
-      // Change bar
-      int barW = e->changes;
-      if (barW > 200) barW = 200;
-      if (barW > 0) {
-        tft.fillRoundRect(110, ry + 18, barW / 2, 5, 2, C_WARM);
-      }
-
-      ry += rowH + 6;
-    }
-  }
-
-  // Bottom bar
-  drawDivider(210);
-  
-  if (listPage > 0) btn("<", 12, 214, 40, 22, TFT_BLACK, C_BLUE, 1);
-  if (listPage + 1 < pages) btn(">", 58, 214, 40, 22, TFT_BLACK, C_BLUE, 1);
-  btn("SCAN AGAIN", 200, 214, 110, 22, TFT_BLACK, C_GREEN, 1);
-}
-
-// =============================================================
-// MONITOR
-// =============================================================
-void drawMonitor() {
-  char tmp[40];
-  sprintf(tmp, "MONITOR: 0x%03lX", monitorId);
-  drawHeader(tmp, NULL);
-
-  btn("BACK", 248, 3, 66, 18, TFT_BLACK, C_RED, 1);
-
-  // Big round indicator
-  int bx = 30, by = 32, bw = 260, bh = 154;
-  tft.fillRoundRect(bx, by, bw, bh, 10, C_LIST_BG);
-  tft.drawRoundRect(bx, by, bw, bh, 10, C_DIVIDER);
-
-  // Fill from bottom
-  int innerX = bx + 6, innerW = bw - 12;
-  int barH = map(brightnessVal, 0, 100, 2, bh - 12);
-  int barY = by + bh - 8 - barH;
-  tft.fillRect(innerX, barY, innerW, barH, C_ACCENT);
-
-  // Large percentage
-  tft.setTextSize(4);
-  tft.setTextColor(C_WHITE, C_LIST_BG);
-  sprintf(tmp, "%3d%%", brightnessVal);
-  centerText(tmp, (by + bh - 4 * 8) / 2, C_WHITE, C_LIST_BG, 4);
-
-  // Info line
-  tft.setTextSize(1);
-  tft.setTextColor(C_GREY, C_LIST_BG);
-  sprintf(tmp, "ID:0x%03lX  PWM:%d/255", monitorId, pwmVal);
-  centerText(tmp, by + bh - 14, C_GREY, C_LIST_BG, 1);
-
-  // Bottom hint
-  drawDivider(190);
-  tft.setTextColor(C_GREY, C_BG);
-  tft.drawString("Rotate wheel to see changes", 10, 200);
-}
-
-// =============================================================
-// DISPATCH
-// =============================================================
-void drawScreen() {
-  switch (mode) {
-    case MODE_IDLE:     drawIdle();     break;
-    case MODE_SCANNING: drawScanning(); break;
-    case MODE_LIST:     drawList();     break;
-    case MODE_MONITOR:  drawMonitor();  break;
-  }
-}
-
-// =============================================================
-// TOUCH
-// =============================================================
-void handleTouch() {
-  static uint32_t lastT = 0;
-  uint16_t x, y;
-  if (!tft.getTouch(&x, &y)) return;
-  if (millis() - lastT < TOUCH_D) return;
-  lastT = millis();
-
-  if (mode == MODE_SCANNING && hit(x, y, 100, 160, 120, 32)) {
-    mode = MODE_LIST; sortByChanges(); listPage = 0; drawScreen();
-    return;
-  }
-
-  if (mode == MODE_IDLE && hit(x, y, 60, 180, 200, 42)) {
-    scanCount = 0; totalPkts = 0; scanDurationMs = 30000;
-    for (int i = 0; i < MAX_SCAN_IDS; i++) scanBuf[i].active = false;
-    scanStartMs = millis(); lastTimerMs = 0; lastPulseMs = 0;
-    mode = MODE_SCANNING; drawScreen();
-    return;
-  }
-
-  if (mode == MODE_LIST) {
-    int start = listPage * PER_PAGE;
-    int itemsOnPage = sortedCount - start;
-    if (itemsOnPage > PER_PAGE) itemsOnPage = PER_PAGE;
-    int ry = HDR_H + 10;
-    for (int i = 0; i < itemsOnPage; i++) {
-      if (hit(x, y, 6, ry, 308, 30)) {
-        int idx = start + i;
-        if (idx < sortedCount) {
-          int si = sortedIdx[idx];
-          monitorId = scanBuf[si].id;
-          brightnessVal = 0; pwmVal = 0;
-          analogWrite(PIN_LED_PWM, 0);
-          if (scanBuf[si].prevLen >= 1) {
-            int v = scanBuf[si].prev[0];
-            brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
-            pwmVal = map(brightnessVal, 0, 100, 0, 255);
-            analogWrite(PIN_LED_PWM, pwmVal);
-          }
-          mode = MODE_MONITOR; drawScreen();
-        }
-        return;
-      }
-      ry += 36;
-    }
-
-    int pages = sortedCount > 0 ? (sortedCount + PER_PAGE - 1) / PER_PAGE : 1;
-    if (listPage > 0 && hit(x, y, 12, 214, 40, 22)) { listPage--; drawScreen(); return; }
-    if (listPage + 1 < pages && hit(x, y, 58, 214, 40, 22)) { listPage++; drawScreen(); return; }
-    if (hit(x, y, 200, 214, 110, 22)) { mode = MODE_IDLE; drawScreen(); return; }
-    return;
-  }
-
-  if (mode == MODE_MONITOR && hit(x, y, 248, 3, 66, 18)) {
-    mode = MODE_LIST; drawScreen();
-  }
+  // CAN не инициализируем — будет попытка в canInit()
+  drawIdle();
+  Serial.println("CYD CAN ID Hunter v1.0");
+  Serial.println("Waiting... START SCAN to begin");
 }
 
 // =============================================================
 // CAN INIT
 // =============================================================
 bool canInit() {
+  pinMode(PIN_CAN_CS, OUTPUT); digitalWrite(PIN_CAN_CS, HIGH);
   SPI.begin(18, 19, 23, PIN_CAN_CS); delay(200);
   byte st = CAN.begin(CAN_SPEED, MCP_8MHz);
   if (st != CAN_OK) { delay(100); st = CAN.begin(CAN_SPEED, MCP_16MHz); }
@@ -411,43 +94,332 @@ bool canInit() {
 }
 
 // =============================================================
-// SCAN DATA
+// ОБРАБОТКА ДАННЫХ CAN
 // =============================================================
-int findOrCreate(uint32_t id) {
-  for (int i = 0; i < MAX_SCAN_IDS; i++)
-    if (scanBuf[i].active && scanBuf[i].id == id) return i;
-  for (int i = 0; i < MAX_SCAN_IDS; i++)
-    if (!scanBuf[i].active) {
-      scanBuf[i].active = true; scanBuf[i].id = id;
-      scanBuf[i].count = 0; scanBuf[i].changes = 0;
-      scanBuf[i].prevLen = 0; memset(scanBuf[i].prev, 0, 8);
-      return i;
+void processCanPacket(uint32_t rxId, byte len, byte* buf) {
+  totalPkts++;
+  // ищем ID в нашем массиве
+  int idx = -1;
+  for (int i = 0; i < idCount; i++) {
+    if (ids[i].id == rxId) { idx = i; break; }
+  }
+  if (idx == -1) {
+    if (idCount >= MAX_IDS) return;
+    idx = idCount++;
+    ids[idx].id = rxId;
+    ids[idx].count = 0;
+    ids[idx].changes = 0;
+    memset(ids[idx].lastData, 0, 8);
+    ids[idx].valid = true;
+  }
+  ids[idx].count++;
+  // определяем изменения — сравниваем с последними данными
+  if (ids[idx].count > 1) {
+    for (byte i = 0; i < len && i < 8; i++) {
+      if (buf[i] != ids[idx].lastData[i]) { ids[idx].changes++; break; }
     }
-  return -1;
+  }
+  memcpy(ids[idx].lastData, buf, minLen(len, 8));
 }
 
-void addToScan(uint32_t id, byte len, byte *data) {
-  int idx = findOrCreate(id); if (idx < 0) return;
-  ScanEntry *e = &scanBuf[idx]; e->count++;
-  bool changed = (e->prevLen != len);
-  if (!changed) for (int i = 0; i < len; i++) if (e->prev[i] != data[i]) { changed = true; break; }
-  if (changed) {
-    e->changes++;
-    int cl = (len < 8) ? len : 8;
-    memcpy(e->prev, data, cl); e->prevLen = len;
+// =============================================================
+// ВСПОМОГАТЕЛЬНЫЕ
+// =============================================================
+int minLen(int a, int b) { return (a < b) ? a : b; }
+
+void drawDivider(int y, uint16_t color) {
+  tft.fillRect(0, y, 320, 2, color);
+}
+
+void centerText(const char* s, int y, int font, uint16_t color, uint16_t bg) {
+  tft.setTextColor(color, bg);
+  tft.drawString(s, (320 - tft.textWidth(s)) / 2, y, font);
+}
+
+void btn(int x, int y, int w, int h, uint16_t bg, const char* label, int font) {
+  tft.fillRoundRect(x, y, w, h, 6, bg);
+  tft.drawRoundRect(x, y, w, h, 6, TFT_WHITE);
+  tft.setTextColor(TFT_BLACK, bg);
+  tft.drawString(label, x + (w - tft.textWidth(label)) / 2, y + (h - 8) / 2, font);
+}
+
+// =============================================================
+// IDLE
+// =============================================================
+void drawIdle() {
+  tft.fillScreen(C_BG);
+  tft.fillRect(0, 0, 320, 28, C_HEADER);
+  drawDivider(28, C_DIVIDER);
+  centerText("CAN ID HUNTER", 5, 2, TFT_WHITE, C_HEADER);
+
+  // статус MCP2515
+  char st[40];
+  sprintf(st, canOk ? "MCP2515:  OK" : "MCP2515:  WAIT");
+  tft.setTextColor(canOk ? C_GREEN : C_RED, C_BG);
+  tft.drawString(st, 10, 34, 1);
+
+  // рамка с инструкцией
+  tft.drawRoundRect(10, 55, 300, 115, 8, C_DIVIDER);
+
+  int yy = 62;
+  tft.setTextColor(C_ACCENT, C_BG);
+  tft.drawString("How to find your ID:", 15, yy, 1); yy += 14;
+  tft.setTextColor(TFT_WHITE, C_BG);
+  tft.drawString("1. Turn ignition ON", 15, yy, 1); yy += 13;
+  tft.drawString("2. Press START SCAN below", 15, yy, 1); yy += 13;
+  tft.drawString("3. Rotate dimmer wheel for 30s", 15, yy, 1); yy += 13;
+  tft.drawString("4. Tap the top ID in LIST", 15, yy, 1); yy += 13;
+  tft.drawString("5. Check brightness bar in MONITOR", 15, yy, 1); yy += 13;
+
+  btn(75, 180, 170, 42, C_GREEN, "START SCAN", 2);
+}
+
+// =============================================================
+// SCANNING
+// =============================================================
+void drawScanning() {
+  tft.fillScreen(C_BG);
+  tft.fillRect(0, 0, 320, 28, C_HEADER);
+  drawDivider(28, C_DIVIDER);
+
+  // пульсирующая зелёная точка
+  tft.fillCircle(10, 14, 4, (millis() / 500) % 2 ? C_GREEN : C_BG);
+  centerText("SCANNING CAN BUS...", 5, 2, TFT_WHITE, C_HEADER);
+
+  btn(260, 195, 55, 33, C_RED, "STOP", 1);
+}
+
+void updateScanning() {
+  unsigned long elapsed = millis() - scanStartMs;
+  int remaining = (elapsed > scanDurationMs) ? 0 : (int)((scanDurationMs - elapsed) / 1000);
+
+  // прогресс-бар
+  int barW = 280;
+  int barX = 20;
+  int barY = 40;
+  int barH = 12;
+  int fillW = (elapsed >= scanDurationMs) ? barW : (int)((long)elapsed * barW / scanDurationMs);
+  tft.fillRect(barX, barY, barW, barH, C_LIST_BG);
+  tft.fillRect(barX, barY, fillW, barH, C_ACCENT);
+  tft.drawRect(barX, barY, barW, barH, C_DIVIDER);
+
+  // пакеты и таймер на одной строке
+  char line[60];
+  sprintf(line, "Pkts:%lu  IDs:%d  Time:%ds", totalPkts, idCount, remaining);
+  centerText(line, 60, 1, TFT_WHITE, C_BG);
+
+  // подсказка
+  tft.setTextColor(C_DIM, C_BG);
+  tft.drawString("Rotate dimmer wheel now!", 40, 90, 1);
+}
+
+// =============================================================
+// LIST
+// =============================================================
+void drawList() {
+  tft.fillScreen(C_BG);
+  tft.fillRect(0, 0, 320, 28, C_HEADER);
+  drawDivider(28, C_DIVIDER);
+  centerText("CAN IDs by changes", 5, 2, TFT_WHITE, C_HEADER);
+
+  // сортировка по changes
+  for (int i = 0; i < idCount - 1; i++) {
+    for (int j = i + 1; j < idCount; j++) {
+      if (ids[j].changes > ids[i].changes && ids[j].valid) {
+        CanIdInfo tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
+      }
+    }
+  }
+
+  int totalPages = (idCount + PER_PAGE - 1) / PER_PAGE;
+  if (totalPages < 1) totalPages = 1;
+  if (listPage >= totalPages) listPage = totalPages - 1;
+
+  int startIdx = listPage * PER_PAGE;
+  int itemsOnPage = (startIdx + PER_PAGE > idCount) ? (idCount - startIdx) : PER_PAGE;
+
+  for (int i = 0; i < itemsOnPage; i++) {
+    int idx = startIdx + i;
+    int rowY = 36 + i * 34;
+
+    // чередование фона
+    tft.fillRect(0, rowY, 320, 33, (i % 2 == 0) ? C_BG : C_LIST_BG);
+
+    char idStr[20];
+    sprintf(idStr, "0x%03lX", ids[idx].id);
+    tft.setTextColor(C_ACCENT, (i % 2 == 0) ? C_BG : C_LIST_BG);
+    tft.drawString(idStr, 8, rowY + 3, 2);
+
+    // жёлтая полоска changes
+    char chStr[20];
+    sprintf(chStr, "ch:%lu", ids[idx].changes);
+    tft.setTextColor(TFT_WHITE, (i % 2 == 0) ? C_BG : C_LIST_BG);
+    tft.drawString(chStr, 110, rowY + 3, 1);
+
+    char cntStr[20];
+    sprintf(cntStr, "cnt:%lu", ids[idx].count);
+    tft.setTextColor(C_DIM, (i % 2 == 0) ? C_BG : C_LIST_BG);
+    tft.drawString(cntStr, 110, rowY + 16, 1);
+
+    // рамка с жёлтым акцентом
+    tft.drawRect(0, rowY + 31, 320, 1, C_WARM);
+  }
+
+  // пустые рамки не рисуем
+
+  // пагинация
+  if (listPage > 0) btn(10, 200, 50, 30, C_BLUE, "<", 2);
+  if (listPage + 1 < totalPages) btn(260, 200, 50, 30, C_BLUE, ">", 2);
+
+  char pg[20];
+  sprintf(pg, "%d/%d", listPage + 1, totalPages);
+  centerText(pg, 207, 1, TFT_WHITE, C_BG);
+
+  btn(75, 200, 70, 30, C_BLUE, "SCAN AGAIN", 1);
+}
+
+// =============================================================
+// MONITOR
+// =============================================================
+void drawMonitor() {
+  tft.fillScreen(C_BG);
+  tft.fillRect(0, 0, 320, 28, C_HEADER);
+  drawDivider(28, C_DIVIDER);
+
+  char hdr[40];
+  sprintf(hdr, "0x%03lX  val:%d", monitorId, brightnessVal);
+  centerText(hdr, 5, 2, TFT_WHITE, C_HEADER);
+
+  // большой индикатор
+  int indX = 40, indY = 50, indW = 240, indH = 120;
+  tft.drawRoundRect(indX - 2, indY - 2, indW + 4, indH + 4, 10, C_DIVIDER);
+
+  int fillH = (brightnessVal * indH) / 100;
+  if (fillH > 0) {
+    int fillColor = (brightnessVal < 25) ? C_GREEN : (brightnessVal < 75) ? TFT_YELLOW : C_RED;
+    tft.fillRect(indX, indY + indH - fillH, indW, fillH, fillColor);
+  }
+
+  // процент внутри индикатора
+  char pct[10];
+  sprintf(pct, "%d%%", brightnessVal);
+  tft.setTextColor(TFT_WHITE, C_BG);
+  tft.setTextSize(2);
+  tft.drawString(pct, indX + indW / 2 - tft.textWidth(pct) / 2, indY + indH / 2 - 10, 2);
+  tft.setTextSize(1);
+
+  btn(100, 195, 120, 35, C_BLUE, "BACK", 2);
+}
+
+void updateMonitor(uint32_t rxId, byte len, byte* buf) {
+  if (rxId != monitorId) return;
+  int v = (len > 0) ? (int)buf[0] : 0;
+  brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
+  drawMonitor();
+}
+
+// =============================================================
+// ОБРАБОТКА ТАЧСКРИНА
+// =============================================================
+uint16_t tx, ty;
+bool touched;
+
+bool isBtn(int x, int y, int w, int h) {
+  return (tx >= x && tx <= x + w && ty >= y && ty <= y + h);
+}
+
+void handleTouch() {
+  touched = tft.getTouch(&tx, &ty);
+  if (!touched) return;
+
+  if (mode == MODE_IDLE && isBtn(75, 180, 170, 42)) {
+    // START SCAN
+    scanStartMs = millis();
+    totalPkts = 0; idCount = 0;
+    for (int i = 0; i < MAX_IDS; i++) ids[i].valid = false;
+    lastTimerMs = 0;
+
+    if (!canOk) canOk = canInit();
+    mode = MODE_SCANNING;
+    drawScanning();
+    return;
+  }
+
+  if (mode == MODE_SCANNING && isBtn(260, 195, 55, 33)) {
+    // STOP
+    mode = MODE_LIST; listPage = 0;
+    drawList();
+    return;
+  }
+
+  if (mode == MODE_LIST) {
+    // тап по ID
+    for (int i = 0; i < 5; i++) {
+      int rowY = 36 + i * 34;
+      if (tx >= 0 && tx <= 320 && ty >= rowY && ty <= rowY + 32) {
+        int startIdx = listPage * PER_PAGE;
+        if (startIdx + i < idCount && ids[startIdx + i].valid) {
+          monitorId = ids[startIdx + i].id;
+          brightnessVal = 0;
+          mode = MODE_MONITOR;
+          drawMonitor();
+          return;
+        }
+      }
+    }
+    // <
+    if (listPage > 0 && isBtn(10, 200, 50, 30)) { listPage--; drawList(); return; }
+    // >
+    int totalPages = (idCount + PER_PAGE - 1) / PER_PAGE;
+    if (totalPages < 1) totalPages = 1;
+    if (listPage + 1 < totalPages && isBtn(260, 200, 50, 30)) { listPage++; drawList(); return; }
+    // SCAN AGAIN
+    if (isBtn(75, 200, 70, 30)) { mode = MODE_IDLE; drawIdle(); return; }
+  }
+
+  if (mode == MODE_MONITOR && isBtn(100, 195, 120, 35)) {
+    // BACK
+    mode = MODE_LIST; drawList();
+    return;
   }
 }
 
-void sortByChanges() {
-  sortedCount = 0;
-  for (int i = 0; i < MAX_SCAN_IDS; i++)
-    if (scanBuf[i].active) sortedIdx[sortedCount++] = i;
-  for (int i = 0; i < sortedCount - 1; i++)
-    for (int j = 0; j < sortedCount - 1 - i; j++) {
-      bool sw = false;
-      if (scanBuf[sortedIdx[j]].changes < scanBuf[sortedIdx[j+1]].changes) sw = true;
-      else if (scanBuf[sortedIdx[j]].changes == scanBuf[sortedIdx[j+1]].changes
-               && scanBuf[sortedIdx[j]].id > scanBuf[sortedIdx[j+1]].id) sw = true;
-      if (sw) { int t = sortedIdx[j]; sortedIdx[j] = sortedIdx[j+1]; sortedIdx[j+1] = t; }
+// =============================================================
+// LOOP
+// =============================================================
+void loop() {
+  handleTouch();
+
+  if (mode == MODE_SCANNING && canOk) {
+    // приём CAN-пакетов
+    while (CAN.checkReceive() == CAN_MSGAVAIL) {
+      uint32_t rxId; byte len = 0; byte buf[8];
+      CAN.readMsgBufID(&rxId, &len, buf);
+      processCanPacket(rxId, len, buf);
     }
+
+    // обновление таймера/прогресса
+    unsigned long now = millis();
+    if (now - lastTimerMs > 250) {
+      lastTimerMs = now;
+      drawScanning(); // точка пульсирует
+      updateScanning();
+
+      // проверка окончания таймаута
+      if (now - scanStartMs >= scanDurationMs) {
+        mode = MODE_LIST; listPage = 0;
+        drawList();
+      }
+    }
+  }
+
+  if (mode == MODE_MONITOR && canOk) {
+    while (CAN.checkReceive() == CAN_MSGAVAIL) {
+      uint32_t rxId; byte len = 0; byte buf[8];
+      CAN.readMsgBufID(&rxId, &len, buf);
+      updateMonitor(rxId, len, buf);
+    }
+  }
+
+  yield();
 }

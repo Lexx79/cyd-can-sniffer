@@ -24,55 +24,82 @@ Scans CAN bus for 30 seconds, finds the ID that changes when you rotate the dimm
 
 ## Hardware
 
-### Connecting MCP2515 (no soldering!)
+This is **CAN sniffer only** — no LED strip, no MOSFET.
 
-| MCP2515 | ESP32 CYD | Connector |
-|---------|-----------|-----------|
-| VCC     | 5V        | 2×8 header (back) |
-| GND     | GND       | 2×8 header (back) |
-| SCK     | GPIO 18   | 2×8 header (back) |
-| MOSI    | GPIO 23   | 2×8 header (back) |
-| MISO    | GPIO 19   | 2×8 header (back) |
-| **CS**  | **GPIO 22** | **P3, pin 3** |
+### Wiring MCP2515 → CYD
+
+The CYD has **no 2×8 header**. SPI pins (18, 19, 23) are only available at the ESP32 chip legs or at the SD card slot contacts. **Some soldering is required.**
+
+#### Option A — Solder to ESP32 legs (recommended, 5V safe)
+
+| MCP2515 | CYD signal | CYD location | Solder? |
+|---------|-----------|-------------|---------|
+| VCC (5V) | 5V | Pad **S3** (back of PCB) | ⚠️ Yes |
+| GND | GND | Pad **S1** (back of PCB) | ⚠️ Yes |
+| SCK | GPIO 18 | ESP32 leg | ⚠️ Yes |
+| MOSI | GPIO 23 | ESP32 leg | ⚠️ Yes |
+| MISO | GPIO 19 | ESP32 leg | ⚠️ Yes |
+| **CS** | **GPIO 22** | **P3 connector, pin 3** | **No — just a dupont wire** |
+| CAN_H | — | MCP2515 terminal | No |
+| CAN_L | — | MCP2515 terminal | No |
+
+**5 solder joints + one wire into P3.**
+S3 (5V) and S1 (GND) are nice solder pads, easy to use.
+
+#### Option B — Solder to SD card slot contacts
+
+| MCP2515 | SD slot contact | CYD signal | Solder? |
+|---------|----------------|-----------|---------|
+| VCC | SD pin 4 (VDD) | 3.3V | ⚠️ Yes |
+| GND | SD pin 3/6 (VSS) | GND | ⚠️ Yes |
+| SCK | SD pin 5 (CLK) | GPIO 18 | ⚠️ Yes |
+| MOSI | SD pin 2 (CMD/DI) | GPIO 23 | ⚠️ Yes |
+| MISO | SD pin 7 (DO) | GPIO 19 | ⚠️ Yes |
+| **CS** | **P3 pin 3** | **GPIO 22** | **No — dupont into P3** |
+
+**6 solder joints to SD card contacts.** But VCC from SD is 3.3V — MCP2515 needs 5V to drive TJA1050 transceiver. Use Option A for 5V.
+
+### CYD layout
+
+```
+                 CYD (rear view)
+    ┌──────────────────────────────────────┐
+    │                                      │
+    │   ESP32 legs:                        │
+    │     18(SCK) 19(MISO) 23(MOSI)       │
+    │                                      │
+    │   Solder pads:                       │
+    │   S1(GND)   S3(5V)                   │
+    │                                      │
+    │   P3 connector:                      │
+    │   ┌──────────────────┐               │
+    │   │ 1:GND  2:35      │               │
+    │   │ 3:GPIO22 ← CS    │ ← 1 wire     │
+    │   │ 4:GPIO21         │               │
+    │   └──────────────────┘               │
+    └──────────────────────────────────────┘
+```
 
 ### OBD2 → MCP2515
 - CAN_H → pin 6
 - CAN_L → pin 14
-- GND → pin 4 / 5
-- +12V → not connected (MCP2515 powered from CYD 5V)
-
-### CYD connectors used
-
-```
-       ┌─────────────────────────────┐
-       │     2×8 header (back)       │
-       │  5V GND MISO(19) SCK(18)    │
-       │         MOSI(23)            │
-       └─────────────────────────────┘
-               │
-               │
-       P3: ┌───┴──────────────┐
-           │ 1: GND   2: 35   │
-           │ 3: GPIO22 ← CS   │ ← one wire!
-           │ 4: 21            │
-           └──────────────────┘
-```
-
-**Result: only one extra wire needed** — from MCP2515 CS to P3 pin 3 (GPIO22). Everything else through the standard 2×8 SPI header.
+- GND → pin 4
 
 ---
 
 ## Pin Table
 
-| Pin | Project Use | Connector |
-|-----|-------------|-----------|
-| 22  | CAN_CS | P3 (pin 3) |
-| 18  | SPI SCK | 2×8 header |
-| 19  | SPI MISO | 2×8 header |
-| 23  | SPI MOSI | 2×8 header |
-| 4   | TFT_RST | DO NOT TOUCH |
-| 5   | SD_CS | Free |
-| 26  | Free | Back pin |
+| Pin | Project Use | Location | Solder? |
+|-----|-------------|----------|---------|
+| 22 | **CAN_CS** | **P3 (pin 3)** | **No — just plug in** |
+| 18 | SPI SCK | ESP32 leg | ⚠️ Yes |
+| 19 | SPI MISO | ESP32 leg | ⚠️ Yes |
+| 23 | SPI MOSI | ESP32 leg | ⚠️ Yes |
+| 4 | TFT_RST | DO NOT TOUCH | — |
+| 5 | SD_CS | Free | — |
+| 26 | Free | ESP32 leg | — |
+| — | 5V | S3 pad | ⚠️ Yes |
+| — | GND | S1 pad | ⚠️ Yes |
 
 ---
 
@@ -117,7 +144,7 @@ Toyota has `METER_SLIDER_BRIGHTNESS_PCT` at 0x610 — Honda doesn't.
 ```
 D:\Gemini\cyd_can_sniffer\
 ├── cyd_can_sniffer.ino          ← current dev sketch
-├── README.md                    ← this file
+├── README.md                    ← this file (English)
 ├── описание проекта.md          ← project description (Russian)
 ├── .gitignore
 └── cyd_can_sniffer_v1.0\        ← v1.0 release
