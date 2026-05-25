@@ -16,6 +16,8 @@ Scans CAN bus for 30 seconds, finds the ID that changes when you rotate the dimm
 ## How It Works
 
 1. **START SCAN** → listens to CAN bus for 30s, counts every ID and data changes
+   - **Dual-phase receive:** SPI drain into a 512-slot ring buffer FIFO (~6.5 KB RAM), then process FIFO without SPI
+   - MCP2515 has only 3 hardware RX buffers — the FIFO eliminates packet loss
 2. **LIST** → IDs sorted by "change count" (most active → top). The illumination ID jumps to the top.
 3. Tap an ID → **MONITOR** → first byte displayed as brightness indicator
 4. Wrong ID? Tap BACK, pick the next one.
@@ -121,7 +123,7 @@ Toyota has `METER_SLIDER_BRIGHTNESS_PCT` at 0x610 — Honda doesn't.
 | Component | Status |
 |-----------|--------|
 | ESP32-2432S028 (CYD) | ✅ Have |
-| MCP2515 + TJA1050 | 🚚 Ordered (Ozon) |
+| MCP2515 + TJA1050 | ✅ Arrived |
 
 **Libraries (Arduino IDE):**
 - TFT_eSPI-CYD (or TFT_eSPI)
