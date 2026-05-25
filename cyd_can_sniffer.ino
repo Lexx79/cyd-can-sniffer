@@ -62,6 +62,29 @@ unsigned long lastTimerMs = 0;
 uint32_t monitorId = 0;
 int brightnessVal = 0;
 
+// ── Кольцевой FIFO для CAN-сообщений (SPI drain → неторопливая обработка) ──
+#define CAN_QUEUE_SIZE 512
+struct CanPacket {
+  uint32_t id; byte len; byte data[8];
+};
+CanPacket canQueue[CAN_QUEUE_SIZE];
+volatile int canHead = 0;
+volatile int canTail = 0;
+
+bool canPush(uint32_t id, byte len, byte *d) {
+  int nxt = (canHead + 1) % CAN_QUEUE_SIZE;
+  if (nxt == canTail) return false;
+  canQueue[canHead].id = id; canQueue[canHead].len = len;
+  memcpy(canQueue[canHead].data, d, len);
+  canHead = nxt; return true;
+}
+bool canPop(uint32_t *id, byte *len, byte *d) {
+  if (canTail == canHead) return false;
+  *id = canQueue[canTail].id; *len = canQueue[canTail].len;
+  memcpy(d, canQueue[canTail].data, canQueue[canTail].len);
+  canTail = (canTail + 1) % CAN_QUEUE_SIZE; return true;
+}
+
 #define PER_PAGE 5
 int listPage = 0;
 bool redrawNeeded = true;
@@ -125,19 +148,24 @@ void loop() {
   yield();
   unsigned long now = millis();
 
-  // CAN — drain available messages (safety limit 100/loop to keep UI responsive)
+  // CAN — Фаза 1: быстрый SPI drain (все RX буферы → кольцевой FIFO)
   if (canOk) {
-    int canLimit = 100;
-    while (canLimit-- > 0 && CAN.checkReceive() == CAN_MSGAVAIL) {
+    while (CAN.checkReceive() == CAN_MSGAVAIL) {
       unsigned long rxId; byte len; byte buf[8];
       CAN.readMsgBufID(&rxId, &len, buf);
-      if (mode == MODE_SCANNING) { totalPkts++; addToScan(rxId, len, buf); }
-      else if (mode == MODE_MONITOR && rxId == monitorId && len >= 1) {
-        totalPkts++;
-        int v = buf[0];
-        brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
-        redrawNeeded = true;
-      }
+      canPush(rxId, len, buf);
+    }
+  }
+
+  // Фаза 2: обработка FIFO (без SPI, без риска потерять CAN-пакеты)
+  uint32_t qId; byte qLen; byte qData[8];
+  while (canPop(&qId, &qLen, qData)) {
+    if (mode == MODE_SCANNING) { totalPkts++; addToScan(qId, qLen, qData); }
+    else if (mode == MODE_MONITOR && qId == monitorId && qLen >= 1) {
+      totalPkts++;
+      int v = qData[0];
+      brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
+      redrawNeeded = true;
     }
   }
 

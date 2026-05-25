@@ -67,6 +67,29 @@ int listPage = 0;
 
 bool canOk = false;
 
+// ── Кольцевой FIFO для CAN-сообщений (SPI drain → неторопливая обработка) ──
+#define CAN_QUEUE_SIZE 512
+struct CanPacket {
+  uint32_t id; byte len; byte data[8];
+};
+CanPacket canQueue[CAN_QUEUE_SIZE];
+volatile int canHead = 0;
+volatile int canTail = 0;
+
+bool canPush(uint32_t id, byte len, byte *d) {
+  int nxt = (canHead + 1) % CAN_QUEUE_SIZE;
+  if (nxt == canTail) return false;
+  canQueue[canHead].id = id; canQueue[canHead].len = len;
+  memcpy(canQueue[canHead].data, d, len);
+  canHead = nxt; return true;
+}
+bool canPop(uint32_t *id, byte *len, byte *d) {
+  if (canTail == canHead) return false;
+  *id = canQueue[canTail].id; *len = canQueue[canTail].len;
+  memcpy(d, canQueue[canTail].data, canQueue[canTail].len);
+  canTail = (canTail + 1) % CAN_QUEUE_SIZE; return true;
+}
+
 // =============================================================
 // SETUP
 // =============================================================
@@ -391,12 +414,16 @@ void loop() {
   handleTouch();
 
   if (mode == MODE_SCANNING && canOk) {
-    // приём CAN-пакетов (drain со счётчиком, MCP2515 всего 3 RX буфера)
-    int canLimit = 100;
-    while (canLimit-- > 0 && CAN.checkReceive() == CAN_MSGAVAIL) {
+    // Фаза 1: SPI drain → FIFO (без лимита, все RX буферы MCP2515)
+    while (CAN.checkReceive() == CAN_MSGAVAIL) {
       unsigned long rxId; byte len = 0; byte buf[8];
       CAN.readMsgBufID(&rxId, &len, buf);
-      processCanPacket(rxId, len, buf);
+      canPush(rxId, len, buf);
+    }
+    // Фаза 2: обработка FIFO (без SPI)
+    uint32_t qId; byte qLen; byte qData[8];
+    while (canPop(&qId, &qLen, qData)) {
+      processCanPacket(qId, qLen, qData);
     }
 
     // обновление таймера/прогресса
@@ -415,11 +442,16 @@ void loop() {
   }
 
   if (mode == MODE_MONITOR && canOk) {
-    int canLimit = 100;
-    while (canLimit-- > 0 && CAN.checkReceive() == CAN_MSGAVAIL) {
+    // Фаза 1: SPI drain → FIFO
+    while (CAN.checkReceive() == CAN_MSGAVAIL) {
       unsigned long rxId; byte len = 0; byte buf[8];
       CAN.readMsgBufID(&rxId, &len, buf);
-      updateMonitor(rxId, len, buf);
+      canPush(rxId, len, buf);
+    }
+    // Фаза 2: обработка FIFO (без SPI)
+    uint32_t qId; byte qLen; byte qData[8];
+    while (canPop(&qId, &qLen, qData)) {
+      updateMonitor(qId, qLen, qData);
     }
   }
 
