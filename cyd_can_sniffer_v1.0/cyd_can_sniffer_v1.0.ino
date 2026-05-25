@@ -391,8 +391,9 @@ void loop() {
   handleTouch();
 
   if (mode == MODE_SCANNING && canOk) {
-    // приём CAN-пакетов
-    while (CAN.checkReceive() == CAN_MSGAVAIL) {
+    // приём CAN-пакетов (drain со счётчиком, MCP2515 всего 3 RX буфера)
+    int canLimit = 100;
+    while (canLimit-- > 0 && CAN.checkReceive() == CAN_MSGAVAIL) {
       unsigned long rxId; byte len = 0; byte buf[8];
       CAN.readMsgBufID(&rxId, &len, buf);
       processCanPacket(rxId, len, buf);
@@ -414,7 +415,8 @@ void loop() {
   }
 
   if (mode == MODE_MONITOR && canOk) {
-    while (CAN.checkReceive() == CAN_MSGAVAIL) {
+    int canLimit = 100;
+    while (canLimit-- > 0 && CAN.checkReceive() == CAN_MSGAVAIL) {
       unsigned long rxId; byte len = 0; byte buf[8];
       CAN.readMsgBufID(&rxId, &len, buf);
       updateMonitor(rxId, len, buf);

@@ -125,16 +125,19 @@ void loop() {
   yield();
   unsigned long now = millis();
 
-  // CAN
-  if (canOk && CAN.checkReceive() == CAN_MSGAVAIL) {
-    unsigned long rxId; byte len=0; byte buf[8]={0};
-    CAN.readMsgBufID(&rxId, &len, buf);
-    if (mode == MODE_SCANNING) { totalPkts++; addToScan(rxId, len, buf); }
-    if (mode == MODE_MONITOR && rxId == monitorId && len >= 1) {
-      totalPkts++;
-      int v = buf[0];
-      brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
-      redrawNeeded = true;
+  // CAN — drain available messages (safety limit 100/loop to keep UI responsive)
+  if (canOk) {
+    int canLimit = 100;
+    while (canLimit-- > 0 && CAN.checkReceive() == CAN_MSGAVAIL) {
+      unsigned long rxId; byte len; byte buf[8];
+      CAN.readMsgBufID(&rxId, &len, buf);
+      if (mode == MODE_SCANNING) { totalPkts++; addToScan(rxId, len, buf); }
+      else if (mode == MODE_MONITOR && rxId == monitorId && len >= 1) {
+        totalPkts++;
+        int v = buf[0];
+        brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
+        redrawNeeded = true;
+      }
     }
   }
 
