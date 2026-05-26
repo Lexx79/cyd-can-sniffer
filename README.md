@@ -3,7 +3,7 @@
 **Find your car's dashboard illumination CAN ID.**
 
 [![ESP32](https://img.shields.io/badge/ESP32-2432S028-blue)](https://github.com/espressif/arduino-esp32)
-[![Version](https://img.shields.io/badge/version-1.0-success)](.)
+[![Version](https://img.shields.io/badge/version-1.2-success)](.)
 
 Firmware for **ESP32-2432S028 (Cheap Yellow Display)** + **MCP2515+TJA1050** CAN module.
 Scans CAN bus for 30 seconds, finds the ID that changes when you rotate the dimmer wheel.
@@ -19,7 +19,8 @@ Scans CAN bus for 30 seconds, finds the ID that changes when you rotate the dimm
    - **Dual-phase receive:** SPI drain into a 512-slot ring buffer FIFO (~6.5 KB RAM), then process FIFO without SPI
    - MCP2515 has only 3 hardware RX buffers — the FIFO eliminates packet loss
 2. **LIST** → IDs sorted by "change count" (most active → top). The illumination ID jumps to the top.
-3. Tap an ID → **MONITOR** → first byte displayed as brightness indicator
+3. Tap an ID → **MONITOR** → bar on left, percentage and raw value on right
+   - Only data area redraws — no flicker
 4. Wrong ID? Tap BACK, pick the next one.
 
 ---
@@ -153,6 +154,14 @@ D:\Gemini\cyd_can_sniffer\
     ├── cyd_can_sniffer_v1.0.ino
     ├── README_v1.0.md
     └── .gitignore
+└── cyd_can_sniffer_v1.1\        ← v1.1 release
+    ├── cyd_can_sniffer_v1.1.ino
+    ├── README_v1.1.md
+    └── .gitignore
+└── cyd_can_sniffer_v1.2\        ← v1.2 release
+    ├── cyd_can_sniffer_v1.2.ino
+    ├── README_v1.2.md
+    └── .gitignore
 ```
 
 ---
@@ -161,4 +170,4 @@ D:\Gemini\cyd_can_sniffer\
 
 MIT
 
-**Author:** Kiro (⚡) — May 2026
+**Author:** Kiro (⚡) — May 2026 (v1.2)
