@@ -1,144 +1,128 @@
-# CAN ID Hunter — ESP32 CYD
+# ⚡ CAN-Multitool — Onboard Diagnostic Center on CYD
 
-**Find your car's dashboard illumination CAN ID.**
+**Version: 2.0 (in development)**
 
 [![ESP32](https://img.shields.io/badge/ESP32-2432S028-blue)](https://github.com/espressif/arduino-esp32)
-[![Version](https://img.shields.io/badge/version-1.2-success)](.)
+[![Version](https://img.shields.io/badge/version-2.0--dev-orange)](.)
 
-Firmware for **ESP32-2432S028 (Cheap Yellow Display)** + **MCP2515+TJA1050** CAN module.
-Scans CAN bus for 30 seconds, finds the ID that changes when you rotate the dimmer wheel.
-
-> Many Honda (Accord 8, 2008-2012) illumination IDs are **not documented** in openpilot/opendbc.
-> This tool finds them in 30 seconds.
+From a simple CAN ID scanner to a full **onboard diagnostic center**.
+One cheap ESP32 display, infinite possibilities.
 
 ---
 
-## How It Works
+## 🌟 The Vision
 
-1. **START SCAN** → listens to CAN bus for 30s, counts every ID and data changes
-   - **Dual-phase receive:** SPI drain into a 512-slot ring buffer FIFO (~6.5 KB RAM), then process FIFO without SPI
-   - MCP2515 has only 3 hardware RX buffers — the FIFO eliminates packet loss
-2. **LIST** → IDs sorted by "change count" (most active → top). The illumination ID jumps to the top.
-3. Tap an ID → **MONITOR** → bar on left, percentage and raw value on right
-   - Only data area redraws — no flicker
-4. Wrong ID? Tap BACK, pick the next one.
+**CAN-Multitool** turns a $10 CYD display into a professional-grade CAN bus tool:
+
+- **🔍 Scanner** — Find unknown CAN IDs in 30 seconds
+- **📊 Monitor** — Decode raw bytes into RPM, speed, temperature, fuel level
+- **🏎️ Dashboard** — Speedometer, tachometer, gauges
+- **🔎 Block finder** — Scan for every ECU module on the bus (UDS)
+- **📡 OBD2** — Read engine data without knowing CAN IDs
+- **📝 Logger** — Dump traffic to SD card
+- **🧪 Test mode** — Manual ID probe for reverse engineering
+
+And more. All on a $10 ESP32 display with a $3 CAN module.
+
+---
+
+## 🧩 Mode Overview
+
+| # | Mode | Status | Description |
+|---|------|--------|-------------|
+| 1 | 🔍 **CAN Scanner** | ✅ v1.2 stable | 30s scan, sort by changes, ID monitor |
+| 2 | 📊 **Value Monitor** | 🔧 Active | Decode bytes: RPM, speed, temp, fuel |
+| 3 | 🏎️ **Speedo/Tacho** | ⏳ Planned | Giant digits, km/h + RPM |
+| 4 | 🔬 **Engine Sensors** | ⏳ Planned | 6-grid live sensors |
+| 5 | 🔎 **Block Finder** | ⏳ Planned | UDS module discovery |
+| 6 | 📝 **CAN Logger** | ⏳ Planned | CSV dump to SD card |
+| 7 | 📡 **OBD2 Scanner** | ⏳ Planned | Standard OBD2 PID reader |
+| 8 | 🧪 **Manual Probe** | ⏳ Planned | Enter any ID, watch bytes |
+| 9 | 🌐 **SLCAN Bridge** | ⏳ Planned | SavvyCAN on PC via USB |
+| 10 | 🔄 **CAN Emulator** | ⏳ Planned | Generate test packets |
+
+---
+
+## How It Started
+
+This project began with a practical problem: finding the **dashboard illumination CAN ID** on a **Honda Accord 8 (2008-2012)**.
+
+The dimmer wheel brightness control ID is well known for Toyota (`METER_SLIDER_BRIGHTNESS_PCT` at 0x610) but **completely undocumented for Honda** — not in openpilot/opendbc, not in community forums.
+
+The CAN ID scanner was born to find it. And then... it grew.
 
 ---
 
 ## Hardware
 
-This is **CAN sniffer only** — no LED strip, no MOSFET.
+### Current (v1.2 / v2.0-dev)
+| Component | Purpose | Status |
+|-----------|---------|--------|
+| ESP32-2432S028 (CYD) | MCU + 320×240 touch display | ✅ Have |
+| MCP2515 + TJA1050 | CAN controller (SPI, CS=22) | ✅ Have |
 
 ### Wiring MCP2515 → CYD
 
-The CYD has **no 2×8 header**. SPI pins (18, 19, 23) are only available at the ESP32 chip legs or at the SD card slot contacts. **Some soldering is required.**
+**Soldering required** — 5 points on ESP32 legs + 1 wire into P3 connector.
 
-#### Option A — Solder to ESP32 legs (recommended, 5V safe)
-
-| MCP2515 | CYD signal | CYD location | Solder? |
-|---------|-----------|-------------|---------|
-| VCC (5V) | 5V | Pad **S3** (back of PCB) | ⚠️ Yes |
-| GND | GND | Pad **S1** (back of PCB) | ⚠️ Yes |
+| MCP2515 | CYD signal | Location | Solder? |
+|---------|-----------|----------|---------|
+| VCC (5V) | 5V | Pad **S3** (back) | ⚠️ Yes |
+| GND | GND | Pad **S1** (back) | ⚠️ Yes |
 | SCK | GPIO 18 | ESP32 leg | ⚠️ Yes |
 | MOSI | GPIO 23 | ESP32 leg | ⚠️ Yes |
 | MISO | GPIO 19 | ESP32 leg | ⚠️ Yes |
-| **CS** | **GPIO 22** | **P3 connector, pin 3** | **No — just a dupont wire** |
-| CAN_H | — | MCP2515 terminal | No |
-| CAN_L | — | MCP2515 terminal | No |
+| **CS** | **GPIO 22** | **P3, pin 3** | ❌ Just wire |
+| CAN_H | — | MCP2515 → OBD2 pin 6 | ❌ |
+| CAN_L | — | MCP2515 → OBD2 pin 14 | ❌ |
 
-**5 solder joints + one wire into P3.**
-S3 (5V) and S1 (GND) are nice solder pads, easy to use.
+### Future Hardware Upgrades
+1. **Second MCP2515 + TJA1050** for B-CAN (125 kbit) — dual bus monitoring
+2. **TWAI native** — built-in CAN controller on ESP32-S3/C6 (no MCP2515 needed)
+3. **RejsaCAN v6.x** — ESP32-C6, dual CAN, 12V power, auto shutdown
 
-#### Option B — Solder to SD card slot contacts
+---
 
-| MCP2515 | SD slot contact | CYD signal | Solder? |
-|---------|----------------|-----------|---------|
-| VCC | SD pin 4 (VDD) | 3.3V | ⚠️ Yes |
-| GND | SD pin 3/6 (VSS) | GND | ⚠️ Yes |
-| SCK | SD pin 5 (CLK) | GPIO 18 | ⚠️ Yes |
-| MOSI | SD pin 2 (CMD/DI) | GPIO 23 | ⚠️ Yes |
-| MISO | SD pin 7 (DO) | GPIO 19 | ⚠️ Yes |
-| **CS** | **P3 pin 3** | **GPIO 22** | **No — dupont into P3** |
-
-**6 solder joints to SD card contacts.** But VCC from SD is 3.3V — MCP2515 needs 5V to drive TJA1050 transceiver. Use Option A for 5V.
-
-### CYD layout
+## Architecture
 
 ```
-                 CYD (rear view)
-    ┌──────────────────────────────────────┐
-    │                                      │
-    │   ESP32 legs:                        │
-    │     18(SCK) 19(MISO) 23(MOSI)       │
-    │                                      │
-    │   Solder pads:                       │
-    │   S1(GND)   S3(5V)                   │
-    │                                      │
-    │   P3 connector:                      │
-    │   ┌──────────────────┐               │
-    │   │ 1:GND  2:35      │               │
-    │   │ 3:GPIO22 ← CS    │ ← 1 wire     │
-    │   │ 4:GPIO21         │               │
-    │   └──────────────────┘               │
-    └──────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│          CAN-Multitool                │
+│                                       │
+│  ┌────────┐ ┌──────────┐ ┌─────────┐ │
+│  │  MENU  │ │ Modes    │ │ Settings│ │
+│  │        │ │ 1-10     │ │         │ │
+│  └────────┘ └──────────┘ └─────────┘ │
+│                                       │
+│  ┌──────────────────────────────────┐ │
+│  │  CAN Core (FIFO, SPI, callbacks) │ │
+│  └──────────────────────────────────┘ │
+│                                       │
+│  ┌──────────────────────────────────┐ │
+│  │  Knowledge Base (ID table, DBC)  │ │
+│  └──────────────────────────────────┘ │
+└──────────────────────────────────────┘
 ```
 
-### OBD2 → MCP2515
-- CAN_H → pin 6
-- CAN_L → pin 14
-- GND → pin 4
-
 ---
 
-## Pin Table
+## Resources
 
-| Pin | Project Use | Location | Solder? |
-|-----|-------------|----------|---------|
-| 22 | **CAN_CS** | **P3 (pin 3)** | **No — just plug in** |
-| 18 | SPI SCK | ESP32 leg | ⚠️ Yes |
-| 19 | SPI MISO | ESP32 leg | ⚠️ Yes |
-| 23 | SPI MOSI | ESP32 leg | ⚠️ Yes |
-| 4 | TFT_RST | DO NOT TOUCH | — |
-| 5 | SD_CS | Free | — |
-| 26 | Free | ESP32 leg | — |
-| — | 5V | S3 pad | ⚠️ Yes |
-| — | GND | S1 pad | ⚠️ Yes |
-
----
-
-## Known Illumination IDs (from opendbc)
-
-Only exterior lights are confirmed — **no Honda dashboard dimming ID is publicly documented**:
-
-| ID (hex) | Module | Signals |
-|----------|--------|---------|
-| 0x374 | STALK_STATUS | HEADLIGHTS_ON, AUTO_HEADLIGHTS |
-| 0x37B | STALK_STATUS_2 | LOW_BEAMS, HIGH_BEAMS, PARK_LIGHTS |
-
-Toyota has `METER_SLIDER_BRIGHTNESS_PCT` at 0x610 — Honda doesn't.
-
----
-
-## Requirements
-
-| Component | Status |
-|-----------|--------|
-| ESP32-2432S028 (CYD) | ✅ Have |
-| MCP2515 + TJA1050 | ✅ Arrived |
-
-**Libraries (Arduino IDE):**
-- TFT_eSPI-CYD (or TFT_eSPI)
-- MCP_CAN
-- Board: ESP32 Dev Module
+- **Knowledge base:** `Honda_Toyota_CAN_ID_Map.xlsx` — 55+ known CAN IDs with byte parsing
+- **HondaCAN (Ldalvik):** 22 parsed P-CAN IDs from Accord 2016 LX
+- **Opendbc (commaai):** Honda DBC files in `D:\Gemini\opendbc_honda\`
+- **RejsaCAN-ESP32 (MagnusThome):** Hardware reference — dual CAN, TWAI, 12V power
+- **Service manual:** haccord.org
+- **CAN projects list:** `CAN_Projects_List.md` — 26 projects
 
 ---
 
 ## Safety
 
 ⚠️ **The CAN bus connects to ABS, SRS (airbags), and engine ECU.**
-- **RECEIVE ONLY** — the sketch never transmits
+- Mode 1 (Scanner) and Mode 2 (Monitor) are **receive-only** — safe
+- Modes 5, 7, 9 require transmission — **use with caution**
 - Disconnect before plugging/unplugging hardware
-- Test on a bench first
 
 ---
 
@@ -146,28 +130,59 @@ Toyota has `METER_SLIDER_BRIGHTNESS_PCT` at 0x610 — Honda doesn't.
 
 ```
 D:\Gemini\cyd_can_sniffer\
-├── cyd_can_sniffer.ino          ← current dev sketch
+├── cyd_can_sniffer.ino          ← v1.2 stable (legacy)
+├── cyd_can_multitool.ino        ← v2.0 CAN-Multitool (active dev!)
 ├── README.md                    ← this file (English)
 ├── описание проекта.md          ← project description (Russian)
-├── .gitignore
-└── cyd_can_sniffer_v1.0\        ← v1.0 release
-    ├── cyd_can_sniffer_v1.0.ino
-    ├── README_v1.0.md
-    └── .gitignore
-└── cyd_can_sniffer_v1.1\        ← v1.1 release
-    ├── cyd_can_sniffer_v1.1.ino
-    ├── README_v1.1.md
-    └── .gitignore
-└── cyd_can_sniffer_v1.2\        ← v1.2 release
-    ├── cyd_can_sniffer_v1.2.ino
-    ├── README_v1.2.md
-    └── .gitignore
+├── HISTORY.md                   ← full project history
+├── Honda_Toyota_CAN_ID_Map.xlsx ← CAN ID database
+├── CAN_Projects_List.md         ← found projects reference
+├── RejsaCAN-ESP32/              ← RejsaCAN clone (reference)
+├── cyd_can_sniffer_v1.0/
+├── cyd_can_sniffer_v1.1/
+├── cyd_can_sniffer_v1.2/
+└── ...
 ```
 
 ---
 
-## License
+## Roadmap
 
-MIT
+### Phase 1 — Foundation ✅
+- v1.0 Basic scanner + LIST
+- v1.1 Sort by changes
+- v1.2 MONITOR layout, anti-flicker
+- Excel with HondaCAN ID table
+- GitHub repo
 
-**Author:** Kiro (⚡) — May 2026 (v1.2)
+### Phase 2 — Multitool 🔧 *[NOW]*
+- Main menu with touch buttons
+- Scanner mode (ported from v1.2)
+- Value monitor (byte decoder)
+- Speedometer/Tachometer
+- Rename to CAN-Multitool
+
+### Phase 3 — Diagnostics
+- Block finder (UDS)
+- OBD2 scanner (PID)
+- Custom car profiles
+- Save/load settings
+
+### Phase 4 — Pro
+- SD card logger
+- SLCAN (SavvyCAN)
+- B-CAN support (2nd MCP2515)
+- Real-time byte graphs
+
+### Phase 5 — Release
+- RejsaCAN v6.x dual CAN support
+- Native TWAI (no MCP2515)
+- LVGL graphical dashboard
+- BLE phone output
+
+---
+
+**Authors:** Kiro (⚡) + Sergey (@Lexxabk)  
+**Started:** May 25th, 2026  
+**Current version:** 2.0-dev  
+**Test vehicle:** Honda Accord 8 (2008-2012)
