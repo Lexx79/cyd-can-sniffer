@@ -21,9 +21,11 @@ One cheap ESP32 display, infinite possibilities.
 | 4 | Select board: **ESP32-2432S028** (CYD) |
 | 5 | Flash and touch the screen |
 
-**Libraries required:**
-- `TFT_eSPI` (CYD variant)
-- `MCP_CAN` v2.x (by coryjfowler)
+| **Libraries required:** |
+| `TFT_eSPI` (CYD variant)
+| `MCP_CAN` v2.x (by coryjfowler)
+| `Font7` (built-in, 7-segment RLE)
+| `FreeSansBold` (built-in GFXFF, anti-aliased) |
 
 ---
 
@@ -171,7 +173,7 @@ Generate fake CAN packets for testing and development.
 D:\Gemini\cyd_can_sniffer\
 ├── cyd_can_sniffer.ino                ← v1.2 stable (legacy)
 ├── cyd_can_multitool/                 ← v2.0 current
-│   └── cyd_can_multitool.ino          ← main sketch (1147 lines)
+│   └── cyd_can_multitool.ino          ← main sketch (1217 lines)
 ├── README.md                          ← this file
 ├── описание проекта.md                ← Russian description
 ├── HISTORY.md                         ← full project history
@@ -274,6 +276,8 @@ D:\Gemini\cyd_can_sniffer\
 | v1.1 | 25.05 | Sort by changes, highlight in scan |
 | v1.2 | 26.05 | MONITOR bar layout, anti-flicker (50ms throttle) |
 | **v2.0-alpha** | **27.05** | **CAN-Multitool: menu + 6 modes + decoder (11 IDs)** |
+| v2.0-patch1 | 27.05 | 4 real-hardware bugs fixed (scanner→list, list ID crop, speedo live data, sensors hardcoded) + diff-based redraw |
+| v2.0-patch2 | 27.05 | **Font overhaul**: 7-segment (Font7) for speedo/monitor, FreeSansBold (anti-aliased) for all text |
 
 ---
 

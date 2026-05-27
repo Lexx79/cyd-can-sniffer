@@ -46,7 +46,30 @@
 - GitHub raw.githubusercontent.com заблокирован
 - Пользователь не тестировал компиляцию после фиксов
 
-### Что дальше
-1. Пользователь компилирует и тестирует на ESP32
-2. Python-дешифратор для COM-порта (Phase 1)
-3. CAN-логи с Accord 8, сверка с HondaCAN таблицей
+### Исправления после теста на реальном железе (22:00 МСК)
+Пользователь прошил v2.0-alpha, нашёл 4 бага — все исправлены:
+
+1. **Scanner STOP → меню**: если сканирование завершено (scanCount > 0), STOP ведёт в ID-лист, а не сразу в меню
+2. **List ID текст обрезался**: textSize 2→1, y+6→y+4, добавлена очистка строки
+3. **Спидометр не обновлялся**: `valueUpdateNeeded = true` добавлен в `processCanData()` при приёме 0x309 (скорость) и 0x17C (RPM)
+4. **Sensors "--" хардкод**: значения выносятся в глобальные переменные через processCanData(), sprintf в drawSensors()
+
+### Diff-based redraw
+- `prevSpeedoVal`, `prevRpmVal` — скорость/RPM обновляются только при изменении
+- `prevMonitorBytes[8]`, `monChanged` — монитор только при изменении данных
+- `prevBrightness`, `prevRawVal` — бар и процент только при изменении
+- `fillRect` обновления строго в границах режима (BOTH: 10,40,300,170; single: 10,70,300,100)
+
+### Font overhaul (22:58 МСК)
+- **Цифры** (спидометр, монитор) → **Font7** (7-segment RLE, "как ЖК-модуль")
+- **Текст** (меню, кнопки, подписи, сенсоры, декодер) → **FreeSansBold** (9pt/12pt, anti-aliased, не пикселит)
+- Включены: `FreeSansBold9pt7b.h`, `FreeSansBold12pt7b.h`, `FreeSansBold18pt7b.h`, `FreeSansBold24pt7b.h`
+- `setup()`: `tft.setFreeFont(&FreeSansBold9pt7b)` вместо `setTextFont(2)`
+- Спидометр: `setTextFont(7)` + textSize 5 (single) / 3 (both)
+- Monitor RAW: `setTextFont(7)` + textSize 3 (%%) / 2 (raw)
+- DrawMenu: +/− заменены на `fillCircle()` (зелёный/красный кружок)
+- Все 22 вызова шрифтов верифицированы, 0 setTextFont(2), скобки 186=186
+
+### Файлы
+- Скетч: `cyd_can_multitool.ino` (1217 строк)
+- Созданы скрипты: `_fix_fonts.py`, `_fix_fonts2.py`, `_fix_spdfooter.py`, `_fix_sensors.py`, `_verify_fonts_final.py`

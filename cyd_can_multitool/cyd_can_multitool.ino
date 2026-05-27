@@ -16,6 +16,12 @@
 #include <mcp_can.h>
 #include <mcp2515_can.h>
 
+// -- Smooth fonts --
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
+#include <Fonts/FreeSansBold24pt7b.h>
+
 // -- TFT --
 TFT_eSPI tft;
 
@@ -72,6 +78,22 @@ int sortedIdx[MAX_IDS];
 int sortedCount = 0;
 unsigned long scanStartMs = 0;
 unsigned long scanDurationMs = SCAN_DURATION;
+
+// -- Shared sensor values --
+int speedoValue = 0;
+int rpmValue = 0;
+int coolantTemp = 0;
+int fuelLevel = 0;
+int throttlePos = 0;
+int batteryVolt = 0;
+
+// -- Previous values for diff-based redraw --
+int prevSpeedoVal = -1;
+int prevRpmVal = -1;
+int prevBrightness = -1;
+int prevRawVal = -1;
+uint8_t prevMonitorBytes[8] = {0};
+bool prevMonitorHasData = false;
 
 // -- Modes --
 enum Mode : uint8_t {
@@ -161,6 +183,7 @@ void centerText(const char* s, int y, uint16_t color, uint16_t bg, int sz) {
 void drawFooter(const char* btn1, const char* btn2, const char* btn3) {
   tft.fillRect(0, SCR_H - FTR_H, SCR_W, FTR_H, C_FOOTER);
   tft.drawFastHLine(0, SCR_H - FTR_H, SCR_W, C_DIVIDER);
+  tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextSize(1);
   // Button 1 (left)
   if (btn1) {
@@ -500,7 +523,13 @@ void drawScanner() {
 void handleScannerTouch(int tx, int ty) {
   int f = footerHit("STOP", NULL, NULL, tx, ty);
   if (f == 1) {
-    mode = MODE_MENU;
+    if (scanCount > 0) {
+      sortByChanges();
+      listPage = 0;
+      mode = MODE_LIST;
+    } else {
+      mode = MODE_MENU;
+    }
     redrawNeeded = true;
   }
 }
@@ -538,12 +567,12 @@ void drawList() {
       tft.fillRoundRect(6, ry, SCR_W - 12, rowH, 4, rowBg);
       tft.drawRoundRect(6, ry, SCR_W - 12, rowH, 4, C_DIVIDER);
 
-      // ID (large)
+      // ID (smaller to fit row)
       char tmp[12];
       sprintf(tmp, "0x%03lX", e->id);
-      tft.setTextSize(2);
+      tft.setTextSize(1);
       tft.setTextColor(C_ACCENT, rowBg);
-      tft.drawString(tmp, col1X, ry + 6);
+      tft.drawString(tmp, col1X, ry + 4);
 
       // Stats
       tft.setTextSize(1);
@@ -635,19 +664,21 @@ void drawMonitorRaw() {
   int barY = MON_BAR_Y + MON_BAR_H - 2 - barFill;
   tft.fillRoundRect(MON_BAR_X + 2, barY, MON_BAR_W - 4, barFill, 2, C_ACCENT);
 
-  // Percent (big)
-  tft.setTextSize(5);
+  // Percent (7-segment LCD look)
+  tft.setTextFont(7);
+  tft.setTextSize(3);
   tft.setTextColor(C_WHITE, C_BG);
   sprintf(tmp, "%3d%%", brightnessVal);
   tft.drawString(tmp, MON_PCT_X, MON_PCT_Y);
 
-  // Raw value (medium)
-  tft.setTextSize(3);
+  // Raw value (7-segment LCD look)
+  tft.setTextSize(2);
   tft.setTextColor(C_ACCENT, C_BG);
-  sprintf(tmp, "%d", displayRawVal);
-  tft.drawString(tmp, MON_PCT_X, MON_VAL_Y);
+  sprintf(tmp, "%3d", displayRawVal);
+  tft.drawString(tmp, MON_PCT_X, MON_VAL_Y + 12);
 
   // Hex data at bottom
+  tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_BG);
   if (monitorHasData) {
@@ -668,18 +699,19 @@ void updateMonitorRawValue() {
   int barY = MON_BAR_Y + MON_BAR_H - 2 - barFill;
   tft.fillRoundRect(MON_BAR_X + 2, barY, MON_BAR_W - 4, barFill, 2, C_ACCENT);
 
-  tft.setTextSize(5);
+  tft.setTextFont(7);
   char tmp[10];
   sprintf(tmp, "%3d%%", brightnessVal);
-  tft.fillRect(MON_PCT_X - 2, MON_PCT_Y - 2, 130, 34, C_BG);
+  tft.fillRect(100, MON_PCT_Y - 2, 120, 36, C_BG);
+  tft.setTextSize(3);
   tft.setTextColor(C_WHITE, C_BG);
   tft.drawString(tmp, MON_PCT_X, MON_PCT_Y);
 
-  tft.setTextSize(3);
-  sprintf(tmp, "%d", displayRawVal);
-  tft.fillRect(MON_PCT_X - 2, MON_VAL_Y - 2, 80, 26, C_BG);
+  sprintf(tmp, "%3d", displayRawVal);
+  tft.fillRect(100, MON_VAL_Y - 2 + 12, 90, 28, C_BG);
+  tft.setTextSize(2);
   tft.setTextColor(C_ACCENT, C_BG);
-  tft.drawString(tmp, MON_PCT_X, MON_VAL_Y);
+  tft.drawString(tmp, MON_PCT_X, MON_VAL_Y + 12);
 }
 
 void handleMonitorRawTouch(int tx, int ty) {
@@ -703,6 +735,9 @@ void drawMonitorDecode() {
   }
 
   // RAW bytes line
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_BG);
   char hex[30]; hex[0] = 0;
@@ -724,7 +759,8 @@ void drawMonitorDecode() {
     } else {
       sprintf(line, "%s: %.1f %s", decodedVals[i].label, decodedVals[i].value, decodedVals[i].unit);
     }
-    tft.setTextSize(2);
+    tft.setFreeFont(&FreeSansBold12pt7b);
+    tft.setTextSize(1);
     tft.setTextColor(C_WHITE, C_BG);
     int lw = tft.textWidth(line);
     tft.drawString(line, (SCR_W - lw) / 2, vy);
@@ -742,6 +778,7 @@ void updateMonitorDecodeValue() {
   }
   char tmp[48]; sprintf(tmp, "RAW:%s", hex);
   tft.fillRect(8, HDR_H + 6, 300, 14, C_BG);
+  tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_BG);
   tft.drawString(tmp, 8, HDR_H + 6);
@@ -756,7 +793,8 @@ void updateMonitorDecodeValue() {
       sprintf(line, "%s: %.1f %s", decodedVals[i].label, decodedVals[i].value, decodedVals[i].unit);
     }
     tft.fillRect(12, vy, 296, 28, C_BG);
-    tft.setTextSize(2);
+    tft.setFreeFont(&FreeSansBold12pt7b);
+    tft.setTextSize(1);
     tft.setTextColor(C_WHITE, C_BG);
     int lw = tft.textWidth(line);
     tft.drawString(line, (SCR_W - lw) / 2, vy);
@@ -788,30 +826,33 @@ void drawSpeedo() {
 
   if (speedoMode == SPEEDO_MODE_SPEED) {
     mainY = 80;
-    tft.setTextSize(7);
-    sprintf(tmp, "%3d", speedoValue);
+    tft.setTextFont(7);
+    tft.setTextSize(5);
+    sprintf(tmp, "%4d", speedoValue);
     int tw = tft.textWidth(tmp);
     tft.setTextColor(C_ACCENT, C_BG);
     tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
 
   } else if (speedoMode == SPEEDO_MODE_RPM) {
     mainY = 80;
-    tft.setTextSize(7);
+    tft.setTextFont(7);
+    tft.setTextSize(5);
     sprintf(tmp, "%4d", rpmValue);
     int tw = tft.textWidth(tmp);
     tft.setTextColor(C_GREEN, C_BG);
     tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
 
   } else if (speedoMode == SPEEDO_MODE_BOTH) {
-    mainY = 60;
-    tft.setTextSize(5);
-    sprintf(tmp, "%3d", speedoValue);
+    mainY = 50;
+    tft.setTextFont(7);
+    tft.setTextSize(3);
+    sprintf(tmp, "%4d", speedoValue);
     int tw = tft.textWidth(tmp);
     tft.setTextColor(C_ACCENT, C_BG);
     tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
 
-    mainY = 130;
-    tft.setTextSize(5);
+    mainY = 140;
+    tft.setTextSize(3);
     sprintf(tmp, "%4d", rpmValue);
     tw = tft.textWidth(tmp);
     tft.setTextColor(C_GREEN, C_BG);
@@ -823,13 +864,18 @@ void drawSpeedo() {
 
 void updateSpeedoValue() {
   // Only redraw number area, not header/footer
-  tft.fillRect(10, 50, 300, 160, C_BG);
+  if (speedoMode == SPEEDO_MODE_BOTH) {
+    tft.fillRect(10, 40, 300, 170, C_BG);
+  } else {
+    tft.fillRect(10, 70, 300, 100, C_BG);
+  }
   drawSpeedo();
 }
 
 void drawSpeedoFooter() {
   tft.fillRect(0, SCR_H - FTR_H, SCR_W, FTR_H, C_FOOTER);
   tft.drawFastHLine(0, SCR_H - FTR_H, SCR_W, C_DIVIDER);
+  tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextSize(1);
   int bw = 44; int gap = 4; int sx = 6;
   // SPD
@@ -837,27 +883,29 @@ void drawSpeedoFooter() {
   tft.fillRoundRect(sx, SCR_H - FTR_H + 4, bw, FTR_H - 8, 4, c1);
   tft.drawRoundRect(sx, SCR_H - FTR_H + 4, bw, FTR_H - 8, 4, C_DIVIDER);
   tft.setTextColor(C_WHITE, c1);
-  tft.drawString("SPD", sx + (bw - 18) / 2, SCR_H - FTR_H + 8);
+  tft.drawString("SPD", sx + (bw - tft.textWidth("SPD")) / 2, SCR_H - FTR_H + 8);
   // BOTH
   sx += bw + gap;
   uint16_t c2 = (speedoMode == SPEEDO_MODE_BOTH) ? 0x4208 : C_BTN_BG;
   tft.fillRoundRect(sx, SCR_H - FTR_H + 4, bw, FTR_H - 8, 4, c2);
   tft.drawRoundRect(sx, SCR_H - FTR_H + 4, bw, FTR_H - 8, 4, C_DIVIDER);
   tft.setTextColor(C_WHITE, c2);
-  tft.drawString("BTH", sx + (bw - 21) / 2, SCR_H - FTR_H + 8);
+  tft.drawString("BTH", sx + (bw - tft.textWidth("BTH")) / 2, SCR_H - FTR_H + 8);
   // RPM
   sx += bw + gap;
   uint16_t c3 = (speedoMode == SPEEDO_MODE_RPM) ? 0x4208 : C_BTN_BG;
   tft.fillRoundRect(sx, SCR_H - FTR_H + 4, bw, FTR_H - 8, 4, c3);
   tft.drawRoundRect(sx, SCR_H - FTR_H + 4, bw, FTR_H - 8, 4, C_DIVIDER);
   tft.setTextColor(C_WHITE, c3);
-  tft.drawString("RPM", sx + (bw - 21) / 2, SCR_H - FTR_H + 8);
+  tft.drawString("RPM", sx + (bw - tft.textWidth("RPM")) / 2, SCR_H - FTR_H + 8);
   // MENU (red, right-aligned)
   int mx = SCR_W - 6 - 50;
   tft.fillRoundRect(mx, SCR_H - FTR_H + 4, 50, FTR_H - 8, 4, C_RED);
   tft.drawRoundRect(mx, SCR_H - FTR_H + 4, 50, FTR_H - 8, 4, C_DIVIDER);
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
   tft.setTextColor(C_WHITE, C_RED);
-  tft.drawString("MENU", mx + (50 - 24) / 2, SCR_H - FTR_H + 8);
+  tft.drawString("MENU", mx + (50 - tft.textWidth("MENU")) / 2, SCR_H - FTR_H + 8);
 }
 
 
@@ -877,8 +925,14 @@ void drawSensors() {
   int startX = (SCR_W - (cols * cellW + (cols - 1) * gapX)) / 2;
   int startY = HDR_H + 10;
 
+  char tmpSpeed[8]; sprintf(tmpSpeed, "%d", speedoValue);
+  char tmpRPM[8]; sprintf(tmpRPM, "%d", rpmValue);
+  char tmpCool[8]; sprintf(tmpCool, "%d", coolantTemp);
+  char tmpFuel[8]; sprintf(tmpFuel, "%d", fuelLevel);
+  char tmpThrot[8]; sprintf(tmpThrot, "%d", throttlePos);
+  char tmpBat[8]; sprintf(tmpBat, "%d", batteryVolt);
   const char* labels[] = {"Speed", "RPM", "Coolant", "Fuel", "Throttle", "Battery"};
-  const char* values[] = {"--", "--", "--", "--", "--", "--"};
+  const char* values[] = {tmpSpeed, tmpRPM, tmpCool, tmpFuel, tmpThrot, tmpBat};
   const char* units[] = {"km/h", "", " C", " %", " %", " V"};
 
   for (int i = 0; i < 6; i++) {
@@ -890,14 +944,16 @@ void drawSensors() {
     tft.fillRoundRect(cx, cy, cellW, cellH, 4, C_LIST_BG);
     tft.drawRoundRect(cx, cy, cellW, cellH, 4, C_DIVIDER);
 
-    // Label
+    // Label (smooth)
+    tft.setFreeFont(&FreeSansBold9pt7b);
     tft.setTextSize(1);
     tft.setTextColor(C_GREY, C_LIST_BG);
     tft.drawString(labels[i], cx + 8, cy + 4);
 
-    // Value + unit
+    // Value + unit (smooth bold)
     char val[16];
     sprintf(val, "%s%s", values[i], units[i]);
+    tft.setFreeFont(&FreeSansBold12pt7b);
     tft.setTextSize(1);
     tft.setTextColor(C_WHITE, C_LIST_BG);
     tft.drawString(val, cx + 8, cy + 24);
@@ -953,17 +1009,27 @@ void processCanData() {
     bool capture =
       (mode == MODE_MONITOR_RAW || mode == MODE_MONITOR_DECODE) && msg.id == monitorId;
     if (mode == MODE_SPEEDO) {
-      if (msg.id == 0x309 && msg.len >= 1) speedoValue = msg.data[0];
-      if (msg.id == 0x17C && msg.len >= 4) rpmValue = ((uint16_t)msg.data[2] << 8) | msg.data[3];
+      if (msg.id == 0x309 && msg.len >= 1) { speedoValue = msg.data[0]; if (speedoValue != prevSpeedoVal) { prevSpeedoVal = speedoValue; valueUpdateNeeded = true; } }
+      if (msg.id == 0x17C && msg.len >= 4) { rpmValue = ((uint16_t)msg.data[2] << 8) | msg.data[3]; if (rpmValue != prevRpmVal) { prevRpmVal = rpmValue; valueUpdateNeeded = true; } }
     }
+    // Sensors: always capture live values
+    if (msg.id == 0x324 && msg.len >= 1) coolantTemp = msg.data[0] - 40;
+    if (msg.id == 0x1A6 && msg.len >= 6) fuelLevel = map(msg.data[5], 0, 255, 0, 100);
+    if (msg.id == 0x13C && msg.len >= 1) throttlePos = msg.data[0] * 100 / 255;
+    if (msg.id == 0x17C && mode == MODE_SENSORS && msg.len >= 4) rpmValue = ((uint16_t)msg.data[2] << 8) | msg.data[3];
+    if (msg.id == 0x309 && mode == MODE_SENSORS && msg.len >= 1) speedoValue = msg.data[0];
 
     if (capture) {
       monitorHasData = true;
       monitorLen = msg.len;
-      memcpy(monitorBytes, msg.data, 8);
+      // Only trigger update if data differs
+      bool monChanged = (displayRawVal != (int)msg.data[0]);
+      if (!monChanged && !prevMonitorHasData) monChanged = true;
       displayRawVal = msg.data[0];
       brightnessVal = (msg.data[0] > 100) ? map(msg.data[0], 0, 255, 0, 100) : msg.data[0];
-      if (millis() - lastMonitorUpdate >= MONITOR_UPDATE_MS) {
+      memcpy(monitorBytes, msg.data, 8);
+      prevMonitorHasData = true;
+      if (monChanged && millis() - lastMonitorUpdate >= MONITOR_UPDATE_MS) {
         lastMonitorUpdate = millis();
         valueUpdateNeeded = true;
       }
@@ -1058,13 +1124,16 @@ void setup() {
   tft.init();
   tft.setRotation(1);
   tft.fillScreen(C_BG);
-  tft.setTextFont(2);
+  tft.setFreeFont(&FreeSansBold9pt7b);
   uint16_t calData[5] = { 275, 3526, 268, 3447, 1 };
   tft.setTouch(calData);
   if (!initCAN()) {
+    tft.setFreeFont(&FreeSansBold12pt7b);
     tft.setTextSize(2);
     tft.setTextColor(C_RED, C_BG);
     centerText("CAN ERROR!", 80, C_RED, C_BG, 2);
+    tft.setFreeFont(&FreeSansBold9pt7b);
+    tft.setTextSize(1);
     centerText("Check wiring", 110, C_GREY, C_BG, 1);
   }
   redrawNeeded = true;
@@ -1105,6 +1174,7 @@ void loop() {
     if (pct > 0) tft.fillRect(10, 80, pct, 20, C_ACCENT);
     char tmp[24];
     sprintf(tmp, "Listening...  %2lus", (unsigned long)remain);
+    tft.setFreeFont(&FreeSansBold9pt7b);
     tft.setTextSize(1);
     tft.setTextColor(C_WHITE, C_BG);
     tft.fillRect(10, 100, 300, 14, C_BG);
