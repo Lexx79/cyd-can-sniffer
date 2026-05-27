@@ -95,6 +95,10 @@ bool pulseState = false;
 unsigned long lastPulseMs = 0;
 unsigned long lastYieldMs = 0;
 
+// ── Лимитер обновления MONITOR (анти-мерцание) ──
+#define MONITOR_UPDATE_MS 50   // обновлять экран не чаще чем раз в 50мс
+unsigned long lastMonitorUpdate = 0;
+
 // ── helpers ──
 void centerText(const char *s, int y, int fg, int bg, uint8_t sz) {
   tft.setTextSize(sz);
@@ -177,8 +181,12 @@ void loop() {
           int v = qData[0];
           displayRawVal = v;  // сохраняем raw 0-255
           brightnessVal = (v > 100) ? map(v, 0, 255, 0, 100) : v;
-          redrawNeeded = true;
-          valueUpdateNeeded = true;
+          // Анти-мерцание: обновлять экран не чаще MONITOR_UPDATE_MS
+          unsigned long n = millis();
+          if (n - lastMonitorUpdate >= MONITOR_UPDATE_MS) {
+            lastMonitorUpdate = n;
+            valueUpdateNeeded = true;
+          }
         } else {
           totalPkts++;
         }
@@ -216,10 +224,10 @@ void loop() {
     }
   }
 
-  // Частичное обновление MONITOR (без перерисовки всего экрана)
+  // Частичное обновление MONITOR (без перерисовки всего экрана, не чаще 50ms)
   if (valueUpdateNeeded) {
     valueUpdateNeeded = false;
-    if (mode == MODE_MONITOR) { updateMonitorValue(); redrawNeeded = false; }
+    if (mode == MODE_MONITOR) { updateMonitorValue(); }
   }
   if (redrawNeeded) { redrawNeeded = false; drawScreen(); }
   handleTouch();
@@ -356,15 +364,14 @@ void drawList() {
 // =============================================================
 // MONITOR
 // =============================================================
-// ── MONITOR layout: бар слева, % справа, raw val ниже ──
-// Константы позиционирования
-#define BAR_X     18
-#define BAR_Y     38
-#define BAR_W     52
-#define BAR_H     138
-#define PAD       8   // скругление+отступ
-#define PCT_Y     (BAR_Y + 20)  // процент (textSize 4)
-#define VAL_Y     (PCT_Y + 40)  // raw value (textSize 3)
+// ── MONITOR layout: как на ASCII — бар с рамкой слева, %+val справа ──
+#define MON_BAR_X    20
+#define MON_BAR_Y    32
+#define MON_BAR_W    60
+#define MON_BAR_H    170
+#define MON_PCT_X    (MON_BAR_X + MON_BAR_W + 20)  // процент
+#define MON_PCT_Y    (MON_BAR_Y + 30)              // позиция %
+#define MON_VAL_Y    (MON_PCT_Y + 48)              // raw value ниже
 
 void drawMonitor() {
   char tmp[48];
@@ -372,62 +379,54 @@ void drawMonitor() {
   drawHeader(tmp, NULL);
   btn("BACK", 248, 3, 66, 18, TFT_BLACK, C_RED, 1);
 
-  // Рамка всего индикатора
-  int bx = BAR_X - PAD, by = BAR_Y - PAD;
-  int bw = SCR_W - bx - 12, bh = BAR_H + PAD * 2;
-  tft.fillRoundRect(bx, by, bw, bh, 8, C_LIST_BG);
-  tft.drawRoundRect(bx, by, bw, bh, 8, C_DIVIDER);
+  // Рамка бара — как в ASCII ┌──────┐ └──────┘
+  tft.drawRoundRect(MON_BAR_X, MON_BAR_Y, MON_BAR_W, MON_BAR_H, 4, C_DIVIDER);
+  // Заливка бара от низа (▓▓▓▓▓)
+  int barFill = map(brightnessVal, 0, 100, 2, MON_BAR_H - 4);
+  int barY = MON_BAR_Y + MON_BAR_H - 2 - barFill;
+  tft.fillRoundRect(MON_BAR_X + 2, barY, MON_BAR_W - 4, barFill, 2, C_ACCENT);
 
-  // Бар слева (заливается от низа)
-  tft.drawRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 4, C_DIVIDER);
-  int barH = map(brightnessVal, 0, 100, 2, BAR_H - 4);
-  int barY = BAR_Y + BAR_H - 2 - barH;
-  tft.fillRoundRect(BAR_X + 2, barY, BAR_W - 4, barH, 2, C_ACCENT);
-
-  // Процент справа крупно
-  tft.setTextSize(4);
-  tft.setTextColor(C_WHITE, C_LIST_BG);
-  int pctX = bx + BAR_W + PAD + 6;
+  // Процент — крупно, справа от рамки как в ASCII
+  tft.setTextSize(5);
+  tft.setTextColor(C_WHITE, C_BG);
   sprintf(tmp, "%3d%%", brightnessVal);
-  tft.drawString(tmp, pctX, PCT_Y);
+  tft.drawString(tmp, MON_PCT_X, MON_PCT_Y);
 
-  // Raw value под процентом (например 242)
+  // Raw value — средний шрифт под процентом (как "242")
   tft.setTextSize(3);
-  tft.setTextColor(C_ACCENT, C_LIST_BG);
+  tft.setTextColor(C_ACCENT, C_BG);
   sprintf(tmp, "%d", displayRawVal);
-  tft.drawString(tmp, pctX, VAL_Y);
+  tft.drawString(tmp, MON_PCT_X, MON_VAL_Y);
 
-  drawDivider(190);
+  // Нижняя часть — инструкция
+  drawDivider(212);
   tft.setTextColor(C_GREY, C_BG);
-  tft.drawString("Rotate wheel to see changes", 10, 200);
+  tft.drawString("Rotate wheel to see changes", 10, 220);
 }
 
 // ── Обновление только данных (без перерисовки всей рамки) ──
 void updateMonitorValue() {
-  int bx = BAR_X - PAD;
-  int pctX = bx + BAR_W + PAD + 6;
-
   // Стираем старую заливку бара
-  tft.fillRect(BAR_X + 2, BAR_Y + 2, BAR_W - 4, BAR_H - 4, C_LIST_BG);
+  tft.fillRect(MON_BAR_X + 2, MON_BAR_Y + 2, MON_BAR_W - 4, MON_BAR_H - 4, C_BG);
   // Рисуем новую
-  int barH = map(brightnessVal, 0, 100, 2, BAR_H - 4);
-  int barY = BAR_Y + BAR_H - 2 - barH;
-  tft.fillRoundRect(BAR_X + 2, barY, BAR_W - 4, barH, 2, C_ACCENT);
+  int barFill = map(brightnessVal, 0, 100, 2, MON_BAR_H - 4);
+  int barY = MON_BAR_Y + MON_BAR_H - 2 - barFill;
+  tft.fillRoundRect(MON_BAR_X + 2, barY, MON_BAR_W - 4, barFill, 2, C_ACCENT);
 
   // Процент
-  tft.setTextSize(4);
+  tft.setTextSize(5);
   char tmp[10];
   sprintf(tmp, "%3d%%", brightnessVal);
-  tft.fillRect(pctX - 2, PCT_Y - 2, 120, 34, C_LIST_BG);
-  tft.setTextColor(C_WHITE, C_LIST_BG);
-  tft.drawString(tmp, pctX, PCT_Y);
+  tft.fillRect(MON_PCT_X - 2, MON_PCT_Y - 2, 130, 34, C_BG);
+  tft.setTextColor(C_WHITE, C_BG);
+  tft.drawString(tmp, MON_PCT_X, MON_PCT_Y);
 
   // Raw value
   tft.setTextSize(3);
   sprintf(tmp, "%d", displayRawVal);
-  tft.fillRect(pctX - 2, VAL_Y - 2, 80, 26, C_LIST_BG);
-  tft.setTextColor(C_ACCENT, C_LIST_BG);
-  tft.drawString(tmp, pctX, VAL_Y);
+  tft.fillRect(MON_PCT_X - 2, MON_VAL_Y - 2, 80, 26, C_BG);
+  tft.setTextColor(C_ACCENT, C_BG);
+  tft.drawString(tmp, MON_PCT_X, MON_VAL_Y);
 }
 
 // =============================================================
