@@ -73,3 +73,39 @@
 ### Файлы
 - Скетч: `cyd_can_multitool.ino` (1217 строк)
 - Созданы скрипты: `_fix_fonts.py`, `_fix_fonts2.py`, `_fix_spdfooter.py`, `_fix_sensors.py`, `_verify_fonts_final.py`
+
+---
+
+## 2026-05-28 (сессия 5 — Bugfix blitz + speed 0x158 + MONITOR cleanup)
+
+### Что сделано
+- **Font7 размеры уменьшены вдвое**: speedo SINGLE 4→2, BOTH 2→1, monitor raw 2→1
+- **Sensor live updates fixed**: убран `mode == MODE_SENSORS` guard в processCanData() — захват CAN ID теперь не зависит от режима
+- **Добавлены prev-trackers** для всех сенсоров + `updateSensorsValue()` с дифф-обновлением только значений
+- **Sensor cell edit**: CAN ID строки удалены, высота ячейки 50px, 3×2 сетка — только Label + Value
+- **Coolant fix**: восстановлен захват 0x324 (data[0]-40)
+- **Picker tap fix**: убран `if (f == 0) return;` — теперь тапы по строкам работают
+- **Speedo flicker fix**: updateSpeedoValue() больше не вызывает drawSpeedo() — инлайн обновление только цифр
+- **0x309 CAR_SPEED parsing fixed**: по opendbc DBC — Intel LE start_bit=7, bytes 0-1-2
+- **0x158 ENGINE_DATA = PRIMARY speed**: BYTE[4:5]=SPEEDOMETER(MPH×0.01) с конвертацией в км/ч, захват добавлен
+- **0x309 убран из скорости**: оставлен только 0x158, 0x309 теперь только в SCAN/MONITOR для экспериментов
+- **MONITOR cleanup**: удалён DECODE mode, удалена гистограмма и проценты — только RAW HEX байты во весь экран
+- **drawList font fix**: добавлен `tft.setFreeFont(&FreeSansBold9pt7b)` в начало функции (Font7 из MONITOR не сбрасывался)
+- **Service manual скачан целиком** (haccord.org): 65 страниц, 540 файлов в `D:\Gemini\Honda_Accord8_Service_Manual\`
+- **Canny.ru данные добавлены** в `Honda_Toyota_CAN_ID_Map.xlsx`: 9 новых листов (~170 ID: BMW, MB, Ford, Mazda, Peugeot, Opel)
+
+### Архитектурные решения
+- Скорость: только 0x158 (ENGINE_DATA bytes 4-5 MPH→km/h). 0x309 выключен как ненадёжный источник
+- MONITOR: только RAW. Никакой DECODE, гистограммы или процентов
+- Sensor slots: слот 0 = 0x158 (Speed) вместо 0x309
+- Сенсоры авто-назначаются: 0=Speed, 1=RPM, 2=Coolant (dataByte=-1) = используют глобальные декодированные значения
+
+### Технические особенности
+- Скетч: ~1400 строк
+- Меню: 10 режимов с индикацией +/-
+- Diff-based redraw: speedo, RPM, monitor, sensors
+- Debug/fix скрипты: более 20 в `_fix_*.py`
+
+### Планы (приостановлены)
+- v2.0 считается финальной на данный момент. Релиз с текущими изменениями.
+- При необходимости — экспериментальный режим с B-CAN (нужен второй MCP2515)

@@ -84,6 +84,17 @@ int fuelLevel = 0;
 int throttlePos = 0;
 int batteryVolt = 0;
 
+// -- Configurable sensor slots (6 cells) --
+#define SENSOR_SLOTS 6
+unsigned long sensorCanId[SENSOR_SLOTS] = {0x158, 0x17C, 0x324, 0, 0, 0};
+int sensorValue[SENSOR_SLOTS];
+int prevSensorValue[SENSOR_SLOTS] = {-1, -1, -1, -1, -1, -1};
+// which CAN data byte(s) to show: -1 = use dedicated decoder, else raw byte index
+int sensorDataByte[SENSOR_SLOTS] = {-1, -1, -1, 0, 0, 0};
+int sensorPickSlot = -1; // which slot is being configured in picker mode
+const char* sensorLabels[SENSOR_SLOTS] = {"Speed", "RPM", "Coolant", "Fuel", "Throttle", "Battery"};
+const char* sensorUnits[SENSOR_SLOTS] = {"km/h", "", " C", " %", " %", " V"};
+
 // -- Previous values for diff-based redraw --
 int prevSpeedoVal = -1;
 int prevRpmVal = -1;
@@ -91,6 +102,10 @@ int prevBrightness = -1;
 int prevRawVal = -1;
 uint8_t prevMonitorBytes[8] = {0};
 bool prevMonitorHasData = false;
+int prevCoolantTemp = -128;
+int prevFuelLevel = -1;
+int prevThrottlePos = -1;
+int prevBatteryVolt = -1;
 
 // -- Modes --
 enum Mode : uint8_t {
@@ -98,9 +113,9 @@ enum Mode : uint8_t {
   MODE_SCANNING,
   MODE_LIST,
   MODE_MONITOR_RAW,
-  MODE_MONITOR_DECODE,
   MODE_SPEEDO,
   MODE_SENSORS,
+  MODE_SENSOR_PICK,
   MODE_BLOCKFIND,
   MODE_LOGGER,
   MODE_OBD2,
@@ -347,9 +362,11 @@ void decodeMessage(unsigned long id, uint8_t* data, int len) {
       if (len >= 1) decodedVals[decodedCount++] = {"Brake", (float)map(data[0], 0, 255, 0, 100), "%"};
       break;
     case 0x158:
-      if (len >= 3) {
-        uint16_t spd = ((uint16_t)data[1] << 8) | data[2];
-        decodedVals[decodedCount++] = {"Speed", (float)spd * 0.01f, "km/h"};
+      if (len >= 6) {
+        // BYTE[4:5]=SPEEDOMETER(MPH*0.01)
+        uint16_t spd = ((uint16_t)data[4] << 8) | data[5];
+        decodedVals[decodedCount++] = {"Speed", (float)spd * 0.01f * 1.60934f, "km/h"};
+        if (len >= 7) decodedVals[decodedCount++] = {"Trip", (float)(data[6] * 10), "km"};
       }
       break;
     case 0x13C:
@@ -541,6 +558,10 @@ void drawList() {
   sprintf(pageStr, "%d/%d", listPage + 1, pages);
   drawHeader("FOUND IDs (by changes)", pageStr);
 
+  // Ensure consistent font
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
+
   int start = listPage * PER_PAGE;
   int itemsOnPage = sortedCount - start;
   if (itemsOnPage > PER_PAGE) itemsOnPage = PER_PAGE;
@@ -614,14 +635,7 @@ void handleListTouch(int tx, int ty) {
         int si = sortedIdx[start + i];
         monitorId = scanBuf[si].id;
         monitorHasData = false;
-        bool known = false;
-        switch (monitorId) {
-          case 0x17C: case 0x309: case 0x324: case 0x1A6:
-          case 0x191: case 0x1A4: case 0x158: case 0x13C:
-          case 0x18E: case 0x294: case 0x255:
-            known = true; break;
-        }
-        mode = known ? MODE_MONITOR_DECODE : MODE_MONITOR_RAW;
+        mode = MODE_MONITOR_RAW;
         redrawNeeded = true;
       }
       return;
@@ -642,73 +656,56 @@ void handleListTouch(int tx, int ty) {
 //  MODE: MONITOR RAW (bar 0-255)
 // ═══════════════════════════════════════════════════════════════
 
-#define MON_BAR_X    20
-#define MON_BAR_Y    40
-#define MON_BAR_W    60
-#define MON_BAR_H    150
-#define MON_PCT_X    (MON_BAR_X + MON_BAR_W + 16)
-#define MON_PCT_Y    (MON_BAR_Y + 20)
-#define MON_VAL_Y    (MON_PCT_Y + 48)
+#define MON_HEX_X    10
+#define MON_HEX_Y    50
 
 void drawMonitorRaw() {
   char tmp[48];
   sprintf(tmp, "MONITOR: 0x%03lX", monitorId);
   drawHeader(tmp, NULL);
 
-  // Bar frame
-  tft.drawRoundRect(MON_BAR_X, MON_BAR_Y, MON_BAR_W, MON_BAR_H, 4, C_DIVIDER);
-  int barFill = map(brightnessVal, 0, 100, 2, MON_BAR_H - 4);
-  int barY = MON_BAR_Y + MON_BAR_H - 2 - barFill;
-  tft.fillRoundRect(MON_BAR_X + 2, barY, MON_BAR_W - 4, barFill, 2, C_ACCENT);
-
-  // Percent (7-segment LCD look)
-  tft.setTextFont(7);
-  tft.setTextSize(3);
-  tft.setTextColor(C_WHITE, C_BG);
-  sprintf(tmp, "%3d%%", brightnessVal);
-  tft.drawString(tmp, MON_PCT_X, MON_PCT_Y);
-
-  // Raw value (7-segment LCD look)
-  tft.setTextSize(2);
-  tft.setTextColor(C_ACCENT, C_BG);
-  sprintf(tmp, "%3d", displayRawVal);
-  tft.drawString(tmp, MON_PCT_X, MON_VAL_Y + 12);
-
-  // Hex data at bottom
-  tft.setFreeFont(&FreeSansBold9pt7b);
+  // Large hex bytes at top
+  tft.setFreeFont(&FreeSansBold12pt7b);
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_BG);
   if (monitorHasData) {
-    char hex[30]; hex[0] = 0;
+    char hex[40]; hex[0] = 0;
     for (int i = 0; i < monitorLen; i++) {
-      sprintf(hex + strlen(hex), " %02X", monitorBytes[i]);
+      sprintf(hex + strlen(hex), "%02X ", monitorBytes[i]);
     }
-    sprintf(tmp, "DATA:%s", hex);
-    tft.drawString(tmp, 10, SCR_H - FTR_H - 14);
+    sprintf(tmp, "HEX: %s", hex);
+    tft.drawString(tmp, 10, 50);
+  }
+
+  // Byte index labels
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
+  tft.setTextColor(C_DIVIDER, C_BG);
+  if (monitorHasData) {
+    char idx[30]; idx[0] = 0;
+    for (int i = 0; i < monitorLen; i++) {
+      sprintf(idx + strlen(idx), "%d  ", i);
+    }
+    sprintf(tmp, "IDX: %s", idx);
+    tft.drawString(tmp, 10, 50 + 28);
   }
 
   drawFooter("BACK", NULL, NULL);
 }
 
 void updateMonitorRawValue() {
-  tft.fillRect(MON_BAR_X + 2, MON_BAR_Y + 2, MON_BAR_W - 4, MON_BAR_H - 4, C_BG);
-  int barFill = map(brightnessVal, 0, 100, 2, MON_BAR_H - 4);
-  int barY = MON_BAR_Y + MON_BAR_H - 2 - barFill;
-  tft.fillRoundRect(MON_BAR_X + 2, barY, MON_BAR_W - 4, barFill, 2, C_ACCENT);
-
-  tft.setTextFont(7);
-  char tmp[10];
-  sprintf(tmp, "%3d%%", brightnessVal);
-  tft.fillRect(100, MON_PCT_Y - 2, 120, 36, C_BG);
-  tft.setTextSize(3);
-  tft.setTextColor(C_WHITE, C_BG);
-  tft.drawString(tmp, MON_PCT_X, MON_PCT_Y);
-
-  sprintf(tmp, "%3d", displayRawVal);
-  tft.fillRect(100, MON_VAL_Y - 2 + 12, 90, 28, C_BG);
-  tft.setTextSize(2);
-  tft.setTextColor(C_ACCENT, C_BG);
-  tft.drawString(tmp, MON_PCT_X, MON_VAL_Y + 12);
+  if (!monitorHasData) return;
+  char tmp[48];
+  char hex[40]; hex[0] = 0;
+  for (int i = 0; i < monitorLen; i++) {
+    sprintf(hex + strlen(hex), "%02X ", monitorBytes[i]);
+  }
+  tft.fillRect(10, 50, 300, 26, C_BG);
+  tft.setFreeFont(&FreeSansBold12pt7b);
+  tft.setTextSize(1);
+  tft.setTextColor(C_GREY, C_BG);
+  sprintf(tmp, "HEX: %s", hex);
+  tft.drawString(tmp, 10, 50);
 }
 
 void handleMonitorRawTouch(int tx, int ty) {
@@ -720,91 +717,6 @@ void handleMonitorRawTouch(int tx, int ty) {
 //  MODE: MONITOR DECODE
 // ═══════════════════════════════════════════════════════════════
 
-void drawMonitorDecode() {
-  char tmp[48];
-  sprintf(tmp, "DECODE: 0x%03lX", monitorId);
-  drawHeader(tmp, NULL);
-
-  if (!monitorHasData) {
-    centerText("Waiting for CAN data...", 100, C_GREY, C_BG, 2);
-    drawFooter("BACK", NULL, NULL);
-    return;
-  }
-
-  // RAW bytes line
-  tft.setFreeFont(&FreeSansBold9pt7b);
-  tft.setFreeFont(&FreeSansBold9pt7b);
-  tft.setFreeFont(&FreeSansBold9pt7b);
-  tft.setTextSize(1);
-  tft.setTextColor(C_GREY, C_BG);
-  char hex[30]; hex[0] = 0;
-  for (int i = 0; i < monitorLen; i++) {
-    sprintf(hex + strlen(hex), " %02X", monitorBytes[i]);
-  }
-  sprintf(tmp, "RAW:%s", hex);
-  tft.drawString(tmp, 8, HDR_H + 6);
-
-  drawDivider(HDR_H + 20);
-
-  // Decoded values (centered)
-  decodeMessage(monitorId, monitorBytes, monitorLen);
-  int vy = HDR_H + 34;
-  for (int i = 0; i < decodedCount && i < 4; i++) {
-    char line[32];
-    if (decodedVals[i].value == (int)decodedVals[i].value) {
-      sprintf(line, "%s: %d %s", decodedVals[i].label, (int)decodedVals[i].value, decodedVals[i].unit);
-    } else {
-      sprintf(line, "%s: %.1f %s", decodedVals[i].label, decodedVals[i].value, decodedVals[i].unit);
-    }
-    tft.setFreeFont(&FreeSansBold12pt7b);
-    tft.setTextSize(1);
-    tft.setTextColor(C_WHITE, C_BG);
-    int lw = tft.textWidth(line);
-    tft.drawString(line, (SCR_W - lw) / 2, vy);
-    vy += 36;
-  }
-
-  drawFooter("BACK", NULL, NULL);
-}
-
-void updateMonitorDecodeValue() {
-  if (!monitorHasData) return;
-  char hex[30]; hex[0] = 0;
-  for (int i = 0; i < monitorLen; i++) {
-    sprintf(hex + strlen(hex), " %02X", monitorBytes[i]);
-  }
-  char tmp[48]; sprintf(tmp, "RAW:%s", hex);
-  tft.fillRect(8, HDR_H + 6, 300, 14, C_BG);
-  tft.setFreeFont(&FreeSansBold9pt7b);
-  tft.setTextSize(1);
-  tft.setTextColor(C_GREY, C_BG);
-  tft.drawString(tmp, 8, HDR_H + 6);
-
-  decodeMessage(monitorId, monitorBytes, monitorLen);
-  int vy = HDR_H + 34;
-  for (int i = 0; i < decodedCount && i < 4; i++) {
-    char line[32];
-    if (decodedVals[i].value == (int)decodedVals[i].value) {
-      sprintf(line, "%s: %d %s", decodedVals[i].label, (int)decodedVals[i].value, decodedVals[i].unit);
-    } else {
-      sprintf(line, "%s: %.1f %s", decodedVals[i].label, decodedVals[i].value, decodedVals[i].unit);
-    }
-    tft.fillRect(12, vy, 296, 28, C_BG);
-    tft.setFreeFont(&FreeSansBold12pt7b);
-    tft.setTextSize(1);
-    tft.setTextColor(C_WHITE, C_BG);
-    int lw = tft.textWidth(line);
-    tft.drawString(line, (SCR_W - lw) / 2, vy);
-    vy += 36;
-  }
-}
-
-void handleMonitorDecodeTouch(int tx, int ty) {
-  int f = footerHit("BACK", NULL, NULL, tx, ty);
-  if (f == 1) { mode = MODE_LIST; redrawNeeded = true; }
-}
-
-// ═══════════════════════════════════════════════════════════════
 //  MODE: SPEEDOMETER
 // ═══════════════════════════════════════════════════════════════
 
@@ -823,7 +735,7 @@ void drawSpeedo() {
   if (speedoMode == SPEEDO_MODE_SPEED) {
     mainY = 80;
     tft.setTextFont(7);
-    tft.setTextSize(5);
+    tft.setTextSize(2);
     sprintf(tmp, "%4d", speedoValue);
     int tw = tft.textWidth(tmp);
     tft.setTextColor(C_ACCENT, C_BG);
@@ -832,7 +744,7 @@ void drawSpeedo() {
   } else if (speedoMode == SPEEDO_MODE_RPM) {
     mainY = 80;
     tft.setTextFont(7);
-    tft.setTextSize(5);
+    tft.setTextSize(2);
     sprintf(tmp, "%4d", rpmValue);
     int tw = tft.textWidth(tmp);
     tft.setTextColor(C_GREEN, C_BG);
@@ -841,14 +753,14 @@ void drawSpeedo() {
   } else if (speedoMode == SPEEDO_MODE_BOTH) {
     mainY = 50;
     tft.setTextFont(7);
-    tft.setTextSize(3);
+    tft.setTextSize(1);
     sprintf(tmp, "%4d", speedoValue);
     int tw = tft.textWidth(tmp);
     tft.setTextColor(C_ACCENT, C_BG);
     tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
 
     mainY = 140;
-    tft.setTextSize(3);
+    tft.setTextSize(1);
     sprintf(tmp, "%4d", rpmValue);
     tw = tft.textWidth(tmp);
     tft.setTextColor(C_GREEN, C_BG);
@@ -859,13 +771,49 @@ void drawSpeedo() {
 }
 
 void updateSpeedoValue() {
-  // Only redraw number area, not header/footer
-  if (speedoMode == SPEEDO_MODE_BOTH) {
+  // Redraw only the number, not header/footer
+  char tmp[10];
+  int mainY, textSz;
+
+  if (speedoMode == SPEEDO_MODE_SPEED) {
+    mainY = 80; textSz = 2;
+    tft.fillRect(10, 70, 300, 60, C_BG);
+    tft.setTextFont(7);
+    tft.setTextSize(textSz);
+    sprintf(tmp, "%4d", speedoValue);
+    int tw = tft.textWidth(tmp);
+    tft.setTextColor(C_ACCENT, C_BG);
+    tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
+
+  } else if (speedoMode == SPEEDO_MODE_RPM) {
+    mainY = 80; textSz = 2;
+    tft.fillRect(10, 70, 300, 60, C_BG);
+    tft.setTextFont(7);
+    tft.setTextSize(textSz);
+    sprintf(tmp, "%4d", rpmValue);
+    int tw = tft.textWidth(tmp);
+    tft.setTextColor(C_GREEN, C_BG);
+    tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
+
+  } else if (speedoMode == SPEEDO_MODE_BOTH) {
     tft.fillRect(10, 40, 300, 170, C_BG);
-  } else {
-    tft.fillRect(10, 70, 300, 100, C_BG);
+
+    mainY = 50; textSz = 1;
+    tft.setTextFont(7);
+    tft.setTextSize(textSz);
+    sprintf(tmp, "%4d", speedoValue);
+    int tw = tft.textWidth(tmp);
+    tft.setTextColor(C_ACCENT, C_BG);
+    tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
+
+    mainY = 140; textSz = 1;
+    tft.setTextFont(7);
+    tft.setTextSize(textSz);
+    sprintf(tmp, "%4d", rpmValue);
+    tw = tft.textWidth(tmp);
+    tft.setTextColor(C_GREEN, C_BG);
+    tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
   }
-  drawSpeedo();
 }
 
 void drawSpeedoFooter() {
@@ -915,52 +863,201 @@ void drawSensors() {
 
   int cols = 2;
   int cellW = 148;
-  int cellH = 45;
+  int cellH = 50;
   int gapX = 12;
-  int gapY = 8;
+  int gapY = 3;
   int startX = (SCR_W - (cols * cellW + (cols - 1) * gapX)) / 2;
-  int startY = HDR_H + 10;
+  int startY = 28;
 
-  char tmpSpeed[8]; sprintf(tmpSpeed, "%d", speedoValue);
-  char tmpRPM[8]; sprintf(tmpRPM, "%d", rpmValue);
-  char tmpCool[8]; sprintf(tmpCool, "%d", coolantTemp);
-  char tmpFuel[8]; sprintf(tmpFuel, "%d", fuelLevel);
-  char tmpThrot[8]; sprintf(tmpThrot, "%d", throttlePos);
-  char tmpBat[8]; sprintf(tmpBat, "%d", batteryVolt);
-  const char* labels[] = {"Speed", "RPM", "Coolant", "Fuel", "Throttle", "Battery"};
-  const char* values[] = {tmpSpeed, tmpRPM, tmpCool, tmpFuel, tmpThrot, tmpBat};
-  const char* units[] = {"km/h", "", " C", " %", " %", " V"};
-
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < SENSOR_SLOTS; i++) {
     int col = i % cols;
     int row = i / cols;
     int cx = startX + col * (cellW + gapX);
     int cy = startY + row * (cellH + gapY);
 
-    tft.fillRoundRect(cx, cy, cellW, cellH, 4, C_LIST_BG);
+    uint16_t cellBg = C_LIST_BG;
+    if (sensorCanId[i] == 0) cellBg = 0x1864;
+    tft.fillRoundRect(cx, cy, cellW, cellH, 4, cellBg);
     tft.drawRoundRect(cx, cy, cellW, cellH, 4, C_DIVIDER);
 
     // Label (smooth)
     tft.setFreeFont(&FreeSansBold9pt7b);
     tft.setTextSize(1);
-    tft.setTextColor(C_GREY, C_LIST_BG);
-    tft.drawString(labels[i], cx + 8, cy + 4);
+    tft.setTextColor(C_GREY, cellBg);
+    tft.drawString(sensorLabels[i], cx + 8, cy + 3);
 
-    // Value + unit (smooth bold)
+    if (sensorCanId[i] == 0) {
+      // No ID assigned — prompt
+      tft.setFreeFont(&FreeSansBold9pt7b);
+      tft.setTextSize(1);
+      tft.setTextColor(C_ACCENT, cellBg);
+      tft.drawString("--- tap --->", cx + 8, cy + 30);
+      continue;
+    }
+
+    // Value + unit
     char val[16];
-    sprintf(val, "%s%s", values[i], units[i]);
+    sprintf(val, "%d%s", sensorValue[i], sensorUnits[i]);
     tft.setFreeFont(&FreeSansBold12pt7b);
     tft.setTextSize(1);
-    tft.setTextColor(C_WHITE, C_LIST_BG);
-    tft.drawString(val, cx + 8, cy + 24);
+    tft.setTextColor(C_WHITE, cellBg);
+    tft.drawString(val, cx + 8, cy + 30);
   }
 
   drawFooter(NULL, "MENU", NULL);
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  MODE: SENSOR PICKER (select CAN ID for a sensor slot)
+// ═══════════════════════════════════════════════════════════════
+
+void drawSensorPicker() {
+  drawHeader("SELECT CAN ID", NULL);
+
+  if (scanCount == 0) {
+    centerText("No scanned IDs!", 80, C_RED, C_BG, 1);
+    centerText("Run SCAN ID mode first", 100, C_GREY, C_BG, 1);
+    drawFooter(NULL, "MENU", NULL);
+    return;
+  }
+
+  int itemsPerPage = 5;
+  int totalPages = (scanCount + itemsPerPage - 1) / itemsPerPage;
+  if (menuPage >= totalPages) menuPage = totalPages - 1;
+  if (menuPage < 0) menuPage = 0;
+
+  int start = menuPage * itemsPerPage;
+  int end = start + itemsPerPage;
+  if (end > scanCount) end = scanCount;
+
+  int ry = HDR_H + 8;
+  int rowH = 30;
+  char tmp[24];
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
+
+  for (int i = start; i < end; i++) {
+    uint16_t bg = (i % 2 == 0) ? C_BG : C_LIST_BG;
+    tft.fillRect(10, ry, 300, rowH, bg);
+
+    sprintf(tmp, "0x%03lX", scanBuf[i].id);
+    tft.setTextColor(C_ACCENT, bg);
+    tft.drawString(tmp, 14, ry + 6);
+
+    sprintf(tmp, "cnt:%lu", scanBuf[i].count);
+    tft.setTextColor(C_GREY, bg);
+    tft.drawString(tmp, 110, ry + 6);
+
+    ry += rowH;
+  }
+
+  // Navigation footer
+  if (totalPages > 1) {
+    drawFooter(menuPage > 0 ? "<--" : NULL,
+               "MENU",
+               menuPage + 1 < totalPages ? "-->" : NULL);
+  } else {
+    drawFooter(NULL, "MENU", NULL);
+  }
+}
+
+void handleSensorPickerTouch(int tx, int ty) {
+  // Footer navigation
+  int itemsPerPage = 5;
+  int totalPages = max(1, (scanCount + itemsPerPage - 1) / itemsPerPage);
+
+  int f = footerHit(menuPage > 0 ? "<--" : NULL,
+                    "MENU",
+                    menuPage + 1 < totalPages ? "-->" : NULL, tx, ty);
+  if (f == 1 && menuPage > 0) { menuPage--; redrawNeeded = true; return; }
+  if (f == 2) { menuPage = 0; mode = MODE_SENSORS; redrawNeeded = true; return; }
+  if (f == 3 && menuPage + 1 < totalPages) { menuPage++; redrawNeeded = true; return; }
+
+  // Check row taps to select a CAN ID
+  if (ty < HDR_H || ty > SCR_H - FTR_H) return;
+  int start = menuPage * itemsPerPage;
+  int end = start + itemsPerPage;
+  if (end > scanCount) end = scanCount;
+
+  int ry = HDR_H + 8;
+  int rowH = 30;
+  for (int i = start; i < end; i++) {
+    if (tx >= 10 && tx <= 310 && ty >= ry && ty <= ry + rowH) {
+      // Assign this CAN ID to the sensor slot
+      if (sensorPickSlot >= 0 && sensorPickSlot < SENSOR_SLOTS) {
+        sensorCanId[sensorPickSlot] = scanBuf[i].id;
+        // Reset prev so first update shows instantly
+        prevSensorValue[sensorPickSlot] = -1;
+        sensorValue[sensorPickSlot] = 0;
+        sensorPickSlot = -1;
+        menuPage = 0;
+        mode = MODE_SENSORS;
+        redrawNeeded = true;
+      }
+      return;
+    }
+    ry += rowH;
+  }
+}
+
+void updateSensorsValue() {
+  // Redraw only the value areas (not labels/borders/header/footer)
+  int cols = 2;
+  int cellW = 148;
+  int cellH = 50;
+  int gapX = 12;
+  int gapY = 3;
+  int startX = (SCR_W - (cols * cellW + (cols - 1) * gapX)) / 2;
+  int startY = 28;
+
+  for (int i = 0; i < SENSOR_SLOTS; i++) {
+    if (sensorCanId[i] == 0) continue;
+    int col = i % cols;
+    int row = i / cols;
+    int cx = startX + col * (cellW + gapX);
+    int cy = startY + row * (cellH + gapY);
+
+    // Clear the value area (label + value)
+    tft.fillRect(cx + 6, cy + 25, cellW - 12, 28, C_LIST_BG);
+
+    // Value + unit
+    char val[16];
+    sprintf(val, "%d%s", sensorValue[i], sensorUnits[i]);
+    tft.setFreeFont(&FreeSansBold12pt7b);
+    tft.setTextSize(1);
+    tft.setTextColor(C_WHITE, C_LIST_BG);
+    tft.drawString(val, cx + 8, cy + 30);
+  }
+}
+
 void handleSensorsTouch(int tx, int ty) {
+  // Check footer (MENU) first
   int f = footerHit(NULL, "MENU", NULL, tx, ty);
-  if (f == 2) { mode = MODE_MENU; redrawNeeded = true; }
+  if (f == 2) { mode = MODE_MENU; redrawNeeded = true; return; }
+
+  // Check cell taps
+  int cols = 2;
+  int cellW = 148;
+  int cellH = 48;
+  int gapX = 12;
+  int gapY = 4;
+  int startX = (SCR_W - (cols * cellW + (cols - 1) * gapX)) / 2;
+  int startY = 30;
+
+  for (int i = 0; i < SENSOR_SLOTS; i++) {
+    int col = i % cols;
+    int row = i / cols;
+    int cx = startX + col * (cellW + gapX);
+    int cy = startY + row * (cellH + gapY);
+    if (tx >= cx && tx <= cx + cellW && ty >= cy && ty <= cy + cellH) {
+      if (scanCount > 0) {
+        sensorPickSlot = i;
+        mode = MODE_SENSOR_PICK;
+        redrawNeeded = true;
+      }
+      return;
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1001,19 +1098,38 @@ void processCanData() {
       }
     }
 
-    // Capture for Monitor/Speedo
-    bool capture =
-      (mode == MODE_MONITOR_RAW || mode == MODE_MONITOR_DECODE) && msg.id == monitorId;
-    if (mode == MODE_SPEEDO) {
-      if (msg.id == 0x309 && msg.len >= 1) { speedoValue = msg.data[0]; if (speedoValue != prevSpeedoVal) { prevSpeedoVal = speedoValue; valueUpdateNeeded = true; } }
-      if (msg.id == 0x17C && msg.len >= 4) { rpmValue = ((uint16_t)msg.data[2] << 8) | msg.data[3]; if (rpmValue != prevRpmVal) { prevRpmVal = rpmValue; valueUpdateNeeded = true; } }
+    // ALWAYS capture sensor/speedo values (independent of mode)
+    // 0x158 = ENGINE_DATA: BYTE[4:5]=SPEEDOMETER(MPH*0.01) - PRIMARY speed on Accord 8
+    if (msg.id == 0x158 && msg.len >= 6) {
+      uint16_t spd = ((uint16_t)msg.data[4] << 8) | msg.data[5];
+      int kph = (int)((float)spd * 0.01f * 1.60934f);
+      if (kph != prevSpeedoVal) { prevSpeedoVal = kph; speedoValue = kph; valueUpdateNeeded = true; }
     }
-    // Sensors: always capture live values
-    if (msg.id == 0x324 && msg.len >= 1) coolantTemp = msg.data[0] - 40;
-    if (msg.id == 0x1A6 && msg.len >= 6) fuelLevel = map(msg.data[5], 0, 255, 0, 100);
-    if (msg.id == 0x13C && msg.len >= 1) throttlePos = msg.data[0] * 100 / 255;
-    if (msg.id == 0x17C && mode == MODE_SENSORS && msg.len >= 4) rpmValue = ((uint16_t)msg.data[2] << 8) | msg.data[3];
-    if (msg.id == 0x309 && mode == MODE_SENSORS && msg.len >= 1) speedoValue = msg.data[0];
+    if (msg.id == 0x17C && msg.len >= 4) { rpmValue = ((uint16_t)msg.data[2] << 8) | msg.data[3]; if (rpmValue != prevRpmVal) { prevRpmVal = rpmValue; valueUpdateNeeded = true; } }
+    if (msg.id == 0x324 && msg.len >= 1) { coolantTemp = msg.data[0] - 40; if (coolantTemp != prevCoolantTemp) { prevCoolantTemp = coolantTemp; valueUpdateNeeded = true; } }
+    // Configurable sensor slots: check each against incoming messages
+    for (int si = 0; si < SENSOR_SLOTS; si++) {
+      if (sensorCanId[si] != 0 && msg.id == sensorCanId[si]) {
+        int b = sensorDataByte[si];
+        if (b == -1) {
+          // Dedicated decoder: copy from global sensor variables
+          if (si == 0) { sensorValue[0] = speedoValue; }
+          else if (si == 1) { sensorValue[1] = rpmValue; }
+          else if (si == 2) { sensorValue[2] = coolantTemp; }
+        } else {
+          if (b >= msg.len) b = 0;
+          sensorValue[si] = msg.data[b];
+        }
+        if (sensorValue[si] != prevSensorValue[si]) {
+          prevSensorValue[si] = sensorValue[si];
+          if (mode == MODE_SENSORS) valueUpdateNeeded = true;
+        }
+      }
+    }
+
+    // Capture for Monitor (mode-gated, uses monitorId)
+    bool capture =
+      (mode == MODE_MONITOR_RAW) && msg.id == monitorId;
 
     if (capture) {
       monitorHasData = true;
@@ -1043,9 +1159,9 @@ void drawScreen() {
     case MODE_SCANNING:      drawScanner(); break;
     case MODE_LIST:          drawList(); break;
     case MODE_MONITOR_RAW:   drawMonitorRaw(); break;
-    case MODE_MONITOR_DECODE: drawMonitorDecode(); break;
     case MODE_SPEEDO:        drawSpeedo(); break;
     case MODE_SENSORS:       drawSensors(); break;
+    case MODE_SENSOR_PICK:   drawSensorPicker(); break;
     default:                 drawMenu(); break;
   }
 }
@@ -1064,8 +1180,8 @@ void handleTouch() {
     case MODE_SCANNING:      handleScannerTouch(tx, ty); break;
     case MODE_LIST:          handleListTouch(tx, ty); break;
     case MODE_MONITOR_RAW:   handleMonitorRawTouch(tx, ty); break;
-    case MODE_MONITOR_DECODE: handleMonitorDecodeTouch(tx, ty); break;
     case MODE_SENSORS:      handleSensorsTouch(tx, ty); break;
+    case MODE_SENSOR_PICK:  handleSensorPickerTouch(tx, ty); break;
     case MODE_SPEEDO: {
       // Custom footer buttons: SPD(6), BTH(52), RPM(98), MENU(SCR_W-56)
       int bw = 44; int gap = 4;
@@ -1184,8 +1300,8 @@ void loop() {
     valueUpdateNeeded = false;
     switch (mode) {
       case MODE_MONITOR_RAW:   updateMonitorRawValue(); break;
-      case MODE_MONITOR_DECODE: updateMonitorDecodeValue(); break;
       case MODE_SPEEDO:        updateSpeedoValue(); break;
+      case MODE_SENSORS:       updateSensorsValue(); break;
       default: break;
     }
   }

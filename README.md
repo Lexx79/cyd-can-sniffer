@@ -1,13 +1,15 @@
 # CAN-Multitool — Onboard Diagnostic Center on CYD
 
-**Version: 2.0-alpha**
+**Version: 2.0**
 
 [![ESP32](https://img.shields.io/badge/ESP32-2432S028-blue)]()
-[![Version](https://img.shields.io/badge/version-2.0--alpha-orange)](.)
+[![Version](https://img.shields.io/badge/version-2.0-green)](.)
 [![License](https://img.shields.io/badge/license-MIT-green)](.)
 
 From a simple CAN ID scanner to a full **onboard diagnostic center**.
 One cheap ESP32 display, infinite possibilities.
+
+**Tested on:** Honda Accord 8 (2008–2012), P-CAN 500 kbps
 
 ---
 
@@ -22,22 +24,16 @@ One cheap ESP32 display, infinite possibilities.
 | 5 | Flash and touch the screen |
 
 | **Libraries required:** |
-| `TFT_eSPI` (CYD variant)
-| `MCP_CAN` v2.x (by coryjfowler)
-| `Font7` (built-in, 7-segment RLE)
-| `FreeSansBold` (built-in GFXFF, anti-aliased) |
+| `TFT_eSPI` (CYD variant, see `lib/`)
+| `MCP_CAN` v2.x (by coryjfowler, see `lib/`)
+| `Font7` (built-in TFT_eSPI, 7-segment RLE)
+| `FreeSansBold` (built-in TFT_eSPI GFXFF, anti-aliased) |
 
 ---
 
 ## Hardware
 
-### Current Setup
-| Component | Purpose |
-|-----------|---------|
-| ESP32-2432S028 (CYD) | MCU + 320×240 color touch display |
-| MCP2515 + TJA1050 | CAN controller via SPI (CS=22) |
-
-### Wiring (soldered)
+### Wiring
 
 | MCP2515 | CYD | Notes |
 |---------|-----|-------|
@@ -51,97 +47,62 @@ One cheap ESP32 display, infinite possibilities.
 | CAN_H | OBD2 pin 6 | — |
 | CAN_L | OBD2 pin 14 | — |
 
-### Future Upgrades
-- **Second MCP2515** for B-CAN (125 kbps) monitoring
-- **RejsaCAN v6.x** — ESP32-C6, dual native TWAI, 12V OBD2 power
-- **TWAI direct** — built-in CAN on ESP32-S3/C6, no external controller
-
 ---
 
 ## Mode Overview
 
-### 1. CAN ID SCANNER (✅ implemented)
-Scans the bus for 30 seconds, collects every CAN ID seen, counts how often each ID changes. Results are sorted by change frequency (most active first).
+### 1. SCAN ID ✅
+Scans the bus for 30 seconds, collects every CAN ID seen, counts how often each ID changes. Results are sorted by change frequency (most active first). Tap any ID → opens Value Monitor.
 
-| Feature | Detail |
-|---------|--------|
-| Duration | 30 seconds |
-| Progress bar | Visual countdown with pulse indicator |
-| Sorting | By number of data changes (descending) |
-| Output | List of IDs with change count |
-| Tap | Any ID opens Value Monitor for that ID |
+### 2. ID LIST ✅
+Scrollable list of all IDs found during scan. Shows CAN ID + change count. Tap to open Monitor. Returns to main menu via EXIT.
 
-### 2. VALUE MONITOR (✅ implemented)
-Watch decoded values from any CAN ID on the bus. Two sub-modes:
+### 3. MONITOR ✅
+Watch live raw bytes from any CAN ID. Two entry points:
+- **From SCAN**: tap any ID → automatically shows that ID
+- **From LIST**: tap any ID → opens monitor
 
-**RAW mode** — bar graph showing first byte value (0–255) + percentage + raw hex bytes.
-- Left column bar (60×170 px), large percentage, raw hex below
-- Auto-updates from any ID, 50ms debounce to prevent flicker
+**Display:**
+```
+MONITOR: 0x158
+HEX: 00 11 22 33 44 55 66 77
+IDX: 0  1  2  3  4  5  6  7
+```
+- Large hex bytes (FreeSansBold12pt7b)
+- Byte index labels (FreeSansBold9pt7b)
+- Diff-based redraw — only updates when data changes
+- Footer: [MENU] button
 
-**DECODE mode** — human-readable values parsed from known Honda CAN IDs.
-Currently 11 decoders built-in:
+### 4. SPEEDOMETER ✅
+Full-screen digital speedometer and tachometer. Three sub-modes via footer buttons:
 
-| CAN ID | Decoded Values | Formula |
-|--------|---------------|---------|
-| 0x17C | RPM, Throttle % | RPM = (data[2]<<8\|data[3]), Throttle = data[0] |
-| 0x309 | Speed (km/h) | data[0] |
-| 0x324 | Coolant °C, Intake °C | data[0]-40, data[1]-40 |
-| 0x1A6 | Fuel %, Cruise | map(data[5],0,255,0,100) |
-| 0x191 | Gear (P/R/N/D/2/1/L/S) | data[0] & 0x07 |
-| 0x1A4 | Brake % | map(data[0],0,255,0,100) |
-| 0x158 | Speed (km/h, 0.01 res) | (data[1]<<8\|data[2]) * 0.01 |
-| 0x13C | Throttle % | data[0] * 100 / 255 |
-| 0x18E | Lateral/Longitudinal G | int8_t(data[n]) * 0.01 |
-| 0x294 | Turn signals, Odometer (km) | bits + 24-bit odometer |
-| 0x255 | Wheel speeds (4× km/h) | 16-bit per wheel |
-
-The decoder table is extensible — add any new ID with parsing formula.
-
-### 3. SPEEDOMETER (✅ implemented)
-Full-screen digital speedometer and tachometer. Three sub-modes:
-
-| Mode | Display | Text Size |
+| Mode | Display | Font7 size |
 |------|---------|-----------|
-| SPD | Speed (km/h) only | 7 (huge) |
-| RPM | RPM only | 7 (huge) |
-| BOTH | Speed + RPM stacked | 5 each |
+| SPD | Speed from **0x158** ENGINE_DATA (MPH×0.01→km/h) | 2 |
+| RPM | RPM from **0x17C** (bytes 2-3 uint16) | 2 |
+| BTH | Speed + RPM stacked | 1 each |
 
-Footer buttons: `[SPD] [BTH] [RPM]` (left-aligned) + `[MENU]` (red, right-aligned).
-Active mode is highlighted with grey background.
+Footer: `[SPD] [BTH] [RPM] [MENU]` — active mode highlighted.
 
-### 4. ENGINE SENSORS (✅ implemented)
-6-cell grid showing live engine sensor values:
+### 5. SENSORS ✅
+6-cell grid showing live engine sensor values. Tap a cell to assign a CAN ID from scanner buffer.
 
-| Cell | Sensor | Unit |
-|------|--------|------|
-| 1 | Speed | km/h |
-| 2 | RPM | — |
-| 3 | Coolant Temp | °C |
-| 4 | Fuel Level | % |
-| 5 | Throttle | % |
-| 6 | Battery | V |
+| Cell | Sensor | CAN ID | Decoder |
+|------|--------|--------|---------|
+| 1 | Speed | **0x158** | BYTE[4:5]=SPEEDOMETER(MPH×0.01→km/h) |
+| 2 | RPM | **0x17C** | byte[2:3] uint16 |
+| 3 | Coolant | **0x324** | byte[0]-40 °C |
+| 4 | Fuel | 0x1A6 | byte[3] raw 0-105% |
+| 5 | Throttle | 0x13C | byte[0] raw 0-255 |
+| 6 | Battery | 0x0 | raw data[byte] |
 
-Values populate automatically from the CAN decoder when matching IDs appear on the bus.
+Cells 1-3 use dedicated decoders (-1 = auto). Cells 4-6 are raw data byte. Tap any empty cell → picker menu with all scanned IDs.
 
-### 5. ECU SCAN (⏳ planned)
-UDS-based module discovery. Sends diagnostic requests across the CAN ID range to find every ECU on the bus. Displays a module map.
-
-### 6. CAN LOGGER (⏳ planned)
-Records all CAN traffic to SD card in CSV format.
-Columns: timestamp, CAN ID, DLC, data[0–7].
-
-### 7. OBD2 SCANNER (⏳ planned)
-Standard OBD2 PID requests via 0x7DF → 0x7E8.
-Reads speed, RPM, coolant temp, engine load, throttle position without knowing CAN IDs.
-
-### 8. PROBE ID (⏳ planned)
-Manual CAN ID entry. Watch live bytes from any ID in real-time.
-
-### 9. SLCAN BRIDGE (⏳ planned)
-USB-CAN adapter mode. ESP32 acts as SLCAN interface for SavvyCAN or other PC tools.
-
-### 10. CAN EMULATOR (⏳ planned)
-Generate fake CAN packets for testing and development.
+### 6. CAN LOGGER ⏳ planned
+### 7. OBD2 SCANNER ⏳ planned
+### 8. ECU SCAN ⏳ planned
+### 9. SLCAN BRIDGE ⏳ planned
+### 10. CAN EMULATOR ⏳ planned
 
 ---
 
@@ -154,11 +115,11 @@ Generate fake CAN packets for testing and development.
 
 ```
 ┌──────────────────────────────────┐
-│  ⚫ CAN-MULTITOOL        v2.0    │ ← Header with CAN status dot
+│  ⚫ CAN-MULTITOOL       v2.0     │ ← Header with CAN status dot
 ├──────────────────────────────────┤
-│  [+ SCAN ID]  [+ MONITOR]       │
-│  [+ SPEEDO]   [+ SENSORS]       │ ← 2×2 grid
-│  [- ECU SCAN] [- LOGGER]        │
+│  [+ SCAN ID]  [+ LIST ID]       │
+│  [+ MONITOR]  [+ SPEEDO]        │ ← 2×2 grid
+│  [+ SENSORS]  [- LOGGER]        │
 │  [- OBD2]     [- PROBE ID]      │
 ├──────────────────────────────────┤
 │  [<]         MENU         [>]    │ ← Footer bar
@@ -167,46 +128,87 @@ Generate fake CAN packets for testing and development.
 
 ---
 
+## Honda CAN Architecture (Accord 8, 2008–2012)
+
+| Bus | Type | Speed | Function |
+|-----|------|-------|----------|
+| **F-CAN (P-CAN)** | HS CAN | **500 kbps** | Powertrain: engine, transmission, ABS, EPS |
+| **B-CAN** | HS CAN | **125 kbps** | Body: lights, wipers, locks, dash dimmer, AC |
+
+**Gateway**: Gauge Control Module (instrument cluster) bridges selected signals:
+- **F→B**: Vehicle speed (0x158 from PCM), coolant temp
+- **B→F**: Ignition key, seatbelt, steering wheel buttons
+
+### Known P-CAN IDs (Accord 8)
+
+| CAN ID | Name | Data |
+|--------|------|------|
+| **0x158** | ENGINE_DATA | BYTE[0:1]=RPM, BYTE[2:3]=??? , **BYTE[4:5]=SPEED(MPH×0.01)**, BYTE[6]=DISTANCE(0.2mi) |
+| **0x17C** | RPM | BYTE[0]=Throttle, BYTE[2:3]=RPM(uint16) |
+| **0x309** | CAR_SPEED (alt) | BYTE[0]=Speed km/h (raw) — alternate/less reliable source |
+| **0x324** | TEMPERATURES | BYTE[0]=Coolant(-40), BYTE[1]=Intake(-40) |
+| **0x1A6** | SCM_BUTTONS | BYTE[3]=Fuel(%), BYTE[5]=Fuel(map), BYTE[1]=Cruise |
+| **0x13C** | GAS_PEDAL | BYTE[0]=Pedal raw 0-255 |
+| **0x191** | GEAR | BYTE[0] & 0x07 = Gear position |
+| **0x1A4** | BRAKE | BYTE[0]=Brake % |
+| **0x18E** | ACCEL | BYTE[0/1]=Lateral/Longitudinal G (int8×0.01) |
+| **0x294** | BODY_INFO | BYTE[0]=Turn signals, BYTE[5:7]=Odometer (24-bit) |
+| **0x255** | WHEEL_SPEEDS | 4× uint16 = individual wheel speeds |
+
+### Self-Diagnosis Mode
+1. Hold SEL/RESET button on cluster
+2. Turn parking lights ON
+3. Ignition ON (within 5s toggle parking OFF→ON→OFF)
+4. Release SEL/RESET, press 3 times
+5. Gauge test: needle sweep + LCD segments + **CAN errors** (Err1=F-CAN, Err2=B-CAN)
+
+---
+
 ## Project Files
 
 ```
 D:\Gemini\cyd_can_sniffer\
-├── cyd_can_sniffer.ino                ← v1.2 stable (legacy)
 ├── cyd_can_multitool/                 ← v2.0 current
-│   └── cyd_can_multitool.ino          ← main sketch (1217 lines)
+│   └── cyd_can_multitool.ino          ← main sketch (~1400 lines)
+├── cyd_can_sniffer.ino                ← v1.2 stable (legacy)
+├── cyd_can_sniffer_v1.2/              ← v1.2 backup
 ├── README.md                          ← this file
 ├── описание проекта.md                ← Russian description
 ├── HISTORY.md                         ← full project history
 ├── Honda_Toyota_CAN_ID_Map.xlsx       ← CAN ID knowledge base
 ├── CAN_Projects_List.md               ← 26 found projects
-├── RejsaCAN-ESP32/                    ← RejsaCAN reference clone
-├── cyd_can_sniffer_v1.0/
-├── cyd_can_sniffer_v1.1/
-├── cyd_can_sniffer_v1.2/
-└── ...
+├── lib/                               ← Required libraries
+│   ├── MCP_CAN/                       ← CAN controller v2.x
+│   ├── TFT_eSPI-CYD/                  ← CYD display config
+│   └── README.md
+├── *.py                               ← Fix/debug scripts (*_fix_*.py)
+└── Honda_Accord8_Service_Manual/      ← Full service manual (65 pages)
 ```
 
 ---
 
-## Knowledge Base
+## Diff-Based Redraw
 
-### Honda CAN Architecture (Accord 8, 2008–2012)
+All live-update modes use **previous value tracking** to avoid unnecessary redraws:
 
-| Bus | Type | Speed | Function |
-|-----|------|-------|----------|
-| **F-CAN** (P-CAN) | High-Speed CAN | **500 kbps** | Powertrain: engine, transmission, ABS, EPS |
-| **B-CAN** | High-Speed CAN | **125 kbps** | Body: lights, wipers, locks, dash dimmer |
+| Mode | Tracked values | Trigger |
+|------|---------------|---------|
+| Speedometer | `prevSpeedoVal`, `prevRpmVal` | Any change in value |
+| Monitor | `prevMonitorBytes[8]`, `monChanged` | Any byte change |
+| Sensors | `prevCoolantTemp`, `prevFuelLevel`, `prevThrottlePos`, `prevBatteryVolt` | Any change in value |
 
-**Gateway**: Instrument cluster bridges selected signals:
-- **F→B**: Vehicle speed, coolant temp
-- **B→F**: Ignition key, seatbelt, steering wheel buttons (as SCM_BUTTONS 0x296)
-- **NOT bridged**: Dashlight dimmer (0x341), turn signals, wipers, climate, door locks
+Only `valueUpdateNeeded = true` triggers redraw — no timer-based flicker.
 
-### Source References
-- **HondaCAN (Ldalvik)**: 22 parsed F-CAN IDs from Accord 2016 LX
-- **Opendbc (commaai)**: 31 Honda DBC files (F-CAN only)
-- **Community**: B-CAN IDs from Honda forums and reverse engineering
-- **Service manual**: haccord.org
+---
+
+## Font System
+
+| Purpose | Font | Sizes |
+|---------|------|-------|
+| Speedo/RPM digits | **Font7** (7-segment RLE) | size 2 (single), size 1 (BOTH) |
+| Monitor hex bytes | **Font7** | size 2 |
+| All text/labels/buttons | **FreeSansBold** (GFXFF) | 9pt, 12pt |
+| Headers | **FreeSansBold** | 12pt |
 
 ---
 
@@ -216,55 +218,11 @@ D:\Gemini\cyd_can_sniffer\
 
 | Mode | Transmits? | Risk |
 |------|-----------|------|
-| Scanner, Monitor, Speedo | ❌ No | Safe — receive only |
-| Sensors | ❌ No | Safe — receive only |
-| ECU Scan, OBD2, Probe | ✅ Yes | Use with caution |
-| SLCAN, Emulator | ✅ Yes | Expert use only |
+| Scanner, Monitor, Speedo, Sensors | ❌ No | Safe — receive only |
+| ECU Scan, OBD2 (future) | ✅ Yes | Use with caution |
+| SLCAN, Emulator (future) | ✅ Yes | Expert use only |
 
-**Physical safety:**
-- Disconnect module before plugging/unplugging OBD2 connector
-- Ensure good CAN_H/CAN_L connection (twisted pair)
-- Do not short CAN lines to power or ground
-
----
-
-## Roadmap
-
-### Phase 1 — Foundation ✅
-| Step | Detail |
-|------|--------|
-| v1.0 | Basic scanner + ID list |
-| v1.1 | Sort by change frequency |
-| v1.2 | Monitor bar, anti-flicker, GitHub release |
-| Research | HondaCAN parsing, opendbc, Excel database |
-
-### Phase 2 — Multitool 🔧 **[NOW]**
-| Step | Status |
-|------|--------|
-| Main menu with touch navigation | ✅ |
-| Scanner mode (ported) | ✅ |
-| Value Monitor RAW + DECODE | ✅ |
-| Speedometer (3 modes) | ✅ |
-| Engine Sensors grid | ✅ |
-| Python decoder script | ⏳ Next |
-
-### Phase 3 — Diagnostics ⏳
-- UDS block finder
-- OBD2 PID scanner
-- Car profile system
-- Settings save/load
-
-### Phase 4 — Pro ⏳
-- SD card logger
-- SLCAN bridge to SavvyCAN
-- B-CAN monitoring (2nd MCP2515)
-- Live byte graphs
-
-### Phase 5 — Release ⏳
-- RejsaCAN v6.x dual CAN support
-- Native TWAI (no MCP2515)
-- LVGL dashboard
-- BLE output
+**Disconnect module before plugging/unplugging OBD2 connector.**
 
 ---
 
@@ -275,14 +233,15 @@ D:\Gemini\cyd_can_sniffer\
 | v1.0 | 25.05 | First scanner + LIST mode |
 | v1.1 | 25.05 | Sort by changes, highlight in scan |
 | v1.2 | 26.05 | MONITOR bar layout, anti-flicker (50ms throttle) |
-| **v2.0-alpha** | **27.05** | **CAN-Multitool: menu + 6 modes + decoder (11 IDs)** |
-| v2.0-patch1 | 27.05 | 4 real-hardware bugs fixed (scanner→list, list ID crop, speedo live data, sensors hardcoded) + diff-based redraw |
-| v2.0-patch2 | 27.05 | **Font overhaul**: 7-segment (Font7) for speedo/monitor, FreeSansBold (anti-aliased) for all text |
+| **v2.0-alpha** | **27.05** | CAN-Multitool: menu + 6 modes + decoder (11 IDs) |
+| v2.0-patch1 | 27.05 | 4 real-hardware bugs fixed + diff-based redraw |
+| v2.0-patch2 | 27.05 | Font7 + FreeSansBold overhaul + sensor picker |
+| **v2.0** | **28.05** | **Final: speed 0x158, MONITOR RAW only, service manual, canny.ru data** |
 
 ---
 
-**Authors:** [Kiro](https://github.com/kiro) + [Sergey / Lexx79](https://github.com/Lexx79)  
+**Authors:** [Kiro (AI)](https://github.com/kiro) + [Sergey / Lexx79](https://github.com/Lexx79)  
 **Started:** May 25th, 2026  
-**Current version:** 2.0-alpha  
-**Test vehicle:** Honda Accord 8 (2008–2012)  
+**Current version:** 2.0  
+**Test vehicle:** Honda Accord 8 (2008–2012) P-CAN 500 kbps  
 **GitHub:** [Lexx79/cyd-can-sniffer](https://github.com/Lexx79/cyd-can-sniffer)
