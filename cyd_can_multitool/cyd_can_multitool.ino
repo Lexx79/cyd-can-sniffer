@@ -17,10 +17,7 @@
 #include <mcp2515_can.h>
 
 // -- Smooth fonts --
-#include <Fonts/FreeSansBold9pt7b.h>
-#include <Fonts/FreeSansBold12pt7b.h>
-#include <Fonts/FreeSansBold18pt7b.h>
-#include <Fonts/FreeSansBold24pt7b.h>
+// FreeSansBold fonts are auto-included from TFT_eSPI (Fonts/GFXFF/)
 
 // -- TFT --
 TFT_eSPI tft;
@@ -811,8 +808,7 @@ void handleMonitorDecodeTouch(int tx, int ty) {
 //  MODE: SPEEDOMETER
 // ═══════════════════════════════════════════════════════════════
 
-uint16_t speedoValue = 0;
-uint16_t rpmValue = 0;
+// speedo values reset on mode enter
 #define SPEEDO_MODE_SPEED 0
 #define SPEEDO_MODE_RPM   1
 #define SPEEDO_MODE_BOTH  2

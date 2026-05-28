@@ -33,4 +33,4 @@ Contains:
 - `User_Setup_Select.h`
 - All board setup files for calibration
 
-> ℹ️ Font7 (7-segment) and FreeSansBold (anti-aliased GFXFF) are built into TFT_eSPI — no extra files needed.
+> ℹ️ Font7 (7-segment) and FreeSansBold (anti-aliased GFXFF) are built into TFT_eSPI — no extra files needed. FreeSansBold fonts are auto-included from Fonts/GFXFF/ via gfxfont.h, do NOT add manual #include <Fonts/FreeSansBold*.h> (duplicate definition).
