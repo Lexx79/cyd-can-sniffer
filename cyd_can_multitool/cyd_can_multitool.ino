@@ -1,14 +1,14 @@
 // ═══════════════════════════════════════════════════════════════
 //  CAN-Multitool - onboard diagnostic center on CYD
-//  Version 2.0-dev
+//  Version 2.2
 //  Authors: Kiro (⚡) + Sergey (@Lexxabk)
 //  Car: Honda Accord 8 (2008-2012)
 //  Hardware: ESP32-2432S028 (CYD) + MCP2515+TJA1050
 //
-//  Modes:
-//    1. CAN ID Scanner  4. Sensors        7. OBD2
-//    2. Value Monitor   5. ECU Scan       8. Probe ID
-//    3. Speedometer     6. CAN Logger     9. SLCAN
+//  Modes (ready 1-5):
+//    1. SCAN ID     4. SENSORS      7. LOGGER
+//    2. MONITOR     5. DIMMER       8. OBD2
+//    3. SPEEDO      6. ECU SCAN
 // ═══════════════════════════════════════════════════════════════
 
 #include <SPI.h>
@@ -83,6 +83,7 @@ int coolantTemp = 0;
 int fuelLevel = 0;
 int throttlePos = 0;
 int batteryVolt = 0;
+int dimmerValue = 0;
 
 // -- Configurable sensor slots (6 cells) --
 #define SENSOR_SLOTS 6
@@ -116,6 +117,7 @@ enum Mode : uint8_t {
   MODE_SPEEDO,
   MODE_SENSORS,
   MODE_SENSOR_PICK,
+  MODE_DIMMER,
   MODE_BLOCKFIND,
   MODE_LOGGER,
   MODE_OBD2,
@@ -155,7 +157,7 @@ int decodedCount = 0;
 int listPage = 0;
 #define PER_PAGE 4
 int menuPage = 0;
-#define MENU_PER_PAGE 4
+#define MENU_PER_PAGE 6
 
 // -- SPI mutex --
 volatile bool spiBusy = false;
@@ -173,10 +175,10 @@ MenuItem menuItems[] = {
   {"[2] MONITOR",      MODE_MONITOR_RAW, 1},
   {"[3] SPEEDO",       MODE_SPEEDO,      1},
   {"[4] SENSORS",      MODE_SENSORS,     1},
-  {"[5] ECU SCAN",     MODE_BLOCKFIND,   0},
-  {"[6] LOGGER",       MODE_LOGGER,      0},
-  {"[7] OBD2",         MODE_OBD2,        0},
-  {"[8] PROBE ID",     MODE_PROBE,       0}
+  {"[5] DIMMER",       MODE_DIMMER,      1},
+  {"[6] ECU SCAN",     MODE_BLOCKFIND,   0},
+  {"[7] LOGGER",       MODE_LOGGER,      0},
+  {"[8] OBD2",         MODE_OBD2,        0}
 };
 const int MENU_ITEM_COUNT = 8;
 
@@ -250,6 +252,7 @@ void drawHeader(const char* title, const char* rightText = NULL) {
   // CAN status dot on the left
   tft.fillCircle(8, 13, 4, canOnline() ? C_GREEN : C_RED);
   tft.setTextSize(1);
+  tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextColor(C_WHITE, C_HEADER);
   tft.drawString(title, 18, 6);
   if (rightText) {
@@ -363,9 +366,9 @@ void decodeMessage(unsigned long id, uint8_t* data, int len) {
       break;
     case 0x158:
       if (len >= 6) {
-        // BYTE[4:5]=SPEEDOMETER(MPH*0.01)
+        // BYTE[4:5]=SPEEDOMETER(km/h*0.01)
         uint16_t spd = ((uint16_t)data[4] << 8) | data[5];
-        decodedVals[decodedCount++] = {"Speed", (float)spd * 0.01f * 1.60934f, "km/h"};
+        decodedVals[decodedCount++] = {"Speed", (float)spd * 0.01f, "km/h"};
         if (len >= 7) decodedVals[decodedCount++] = {"Trip", (float)(data[6] * 10), "km"};
       }
       break;
@@ -384,6 +387,8 @@ void decodeMessage(unsigned long id, uint8_t* data, int len) {
       if (len >= 4) {
         if (data[0] & 0x01) decodedVals[decodedCount++] = {"Turn", 1, "L"};
         if (data[0] & 0x02) decodedVals[decodedCount++] = {"Turn", 1, "R"};
+        // BYTE[1] = dash brightness: 0(dim)..15(bright) with headlights ON, 0x60=MAX overdrive, ~16 when headlights OFF
+        decodedVals[decodedCount++] = {"Dimmer", (float)data[1], ""};
         uint32_t odo = ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | data[3];
         decodedVals[decodedCount++] = {"Odometer", (float)odo, "km"};
       }
@@ -412,18 +417,20 @@ void decodeMessage(unsigned long id, uint8_t* data, int len) {
 // ═══════════════════════════════════════════════════════════════
 
 void drawMenu() {
-  drawHeader("CAN-MULTITOOL", "v2.0");
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
+  drawHeader("CAN-MULTITOOL", "v2.2");
 
   int itemsCount = MENU_ITEM_COUNT;
 
-  // Layout: 2 columns x rows, starting below header
-  int colW = 150;
-  int rowH = 38;
-  int gapX = 8;
-  int gapY = 6;
-  int startX = 8;
-  int startY = HDR_H + 6;
-  int perPage = MENU_PER_PAGE; // 4 buttons per page = 2 cols x 2 rows
+  // Layout: 2 columns x 3 rows (6 items per page)
+  int colW = 152;
+  int rowH = 48;
+  int gapX = 6;
+  int gapY = 3;
+  int startX = 6;
+  int startY = HDR_H + 3;
+  int perPage = MENU_PER_PAGE; // 6 buttons per page
   int cols = 2;
   int pageStart = menuPage * perPage;
 
@@ -470,8 +477,8 @@ void handleMenuTouch(int tx, int ty) {
   int itemsCount = MENU_ITEM_COUNT;
   int perPage = MENU_PER_PAGE;
   int cols = 2;
-  int colW = 150; int rowH = 38; int gapX = 8; int gapY = 6;
-  int startX = 8; int startY = HDR_H + 6;
+  int colW = 152; int rowH = 48; int gapX = 6; int gapY = 3;
+  int startX = 6; int startY = HDR_H + 3;
   int pageStart = menuPage * perPage;
 
   for (int i = 0; i < perPage && (pageStart + i) < itemsCount; i++) {
@@ -504,6 +511,8 @@ void handleMenuTouch(int tx, int ty) {
 // ═══════════════════════════════════════════════════════════════
 
 void drawScanner() {
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
   char tmp[48];
   sprintf(tmp, "SCANNING: %lds", (scanDurationMs - (millis() - scanStartMs)) / 1000);
   drawHeader(tmp, NULL);
@@ -553,14 +562,12 @@ void handleScannerTouch(int tx, int ty) {
 // ═══════════════════════════════════════════════════════════════
 
 void drawList() {
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
   int pages = sortedCount > 0 ? (sortedCount + PER_PAGE - 1) / PER_PAGE : 1;
   char pageStr[16];
   sprintf(pageStr, "%d/%d", listPage + 1, pages);
   drawHeader("FOUND IDs (by changes)", pageStr);
-
-  // Ensure consistent font
-  tft.setFreeFont(&FreeSansBold9pt7b);
-  tft.setTextSize(1);
 
   int start = listPage * PER_PAGE;
   int itemsOnPage = sortedCount - start;
@@ -664,8 +671,8 @@ void drawMonitorRaw() {
   sprintf(tmp, "MONITOR: 0x%03lX", monitorId);
   drawHeader(tmp, NULL);
 
-  // Large hex bytes at top
-  tft.setFreeFont(&FreeSansBold12pt7b);
+  // Hex bytes
+  tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_BG);
   if (monitorHasData) {
@@ -700,8 +707,8 @@ void updateMonitorRawValue() {
   for (int i = 0; i < monitorLen; i++) {
     sprintf(hex + strlen(hex), "%02X ", monitorBytes[i]);
   }
-  tft.fillRect(10, 50, 300, 26, C_BG);
-  tft.setFreeFont(&FreeSansBold12pt7b);
+  tft.fillRect(10, 50, 300, 22, C_BG);
+  tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_BG);
   sprintf(tmp, "HEX: %s", hex);
@@ -714,9 +721,90 @@ void handleMonitorRawTouch(int tx, int ty) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  MODE: MONITOR DECODE
+// ═══════════════════════════════════════════════════════════════
+//  MODE: DIMMER (0x294 BYTE[1] - подсветка приборки)
 // ═══════════════════════════════════════════════════════════════
 
+void drawDimmer() {
+  drawHeader("DASH DIMMER", NULL);
+
+  // Big number (Font7 like speedo)
+  tft.setTextFont(7);
+  tft.setTextSize(2);
+  char tmp[10];
+  sprintf(tmp, "0x%02X", dimmerValue);
+  int tw = tft.textWidth(tmp);
+  tft.setTextColor(C_ACCENT, C_BG);
+  tft.drawString(tmp, (SCR_W - tw) / 2, 60);
+
+  // Bar behind the number
+  int barW = 300;
+  int barH = 30;
+  int barX = 10;
+  int barY = 120;
+
+  tft.fillRect(barX, barY, barW, barH, C_LIST_BG);
+  tft.drawRect(barX, barY, barW, barH, C_DIVIDER);
+
+  // Fill portion
+  int fillW = map(dimmerValue, 0, 150, 0, barW);
+  if (fillW > barW) fillW = barW;
+  if (fillW < 0) fillW = 0;
+  uint16_t barColor = (dimmerValue > 0x60) ? C_RED : C_ACCENT;
+  if (fillW > 0) tft.fillRect(barX + 1, barY + 1, fillW - 2, barH - 2, barColor);
+
+  // Label
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
+  tft.setTextColor(C_GREY, C_BG);
+  sprintf(tmp, "Bright: %d  (0=%s  15=%s  0x60=MAX)", dimmerValue, "OFF", "MAX");
+  tft.drawString(tmp, 10, 160);
+
+  drawFooter(NULL, "MENU", NULL);
+}
+
+void updateDimmerValue() {
+  if (dimmerValue == prevBrightness) return;
+  prevBrightness = dimmerValue;
+
+  // Update big number
+  tft.fillRect(10, 50, 300, 60, C_BG);
+  tft.setTextFont(7);
+  tft.setTextSize(2);
+  char tmp[10];
+  sprintf(tmp, "0x%02X", dimmerValue);
+  int tw = tft.textWidth(tmp);
+  tft.setTextColor(C_ACCENT, C_BG);
+  tft.drawString(tmp, (SCR_W - tw) / 2, 60);
+
+  // Update bar
+  int barW = 300;
+  int barH = 30;
+  int barX = 10;
+  int barY = 120;
+  tft.fillRect(barX, barY, barW, barH, C_LIST_BG);
+  tft.drawRect(barX, barY, barW, barH, C_DIVIDER);
+  int fillW = map(dimmerValue, 0, 150, 0, barW);
+  if (fillW > barW) fillW = barW;
+  if (fillW < 0) fillW = 0;
+  uint16_t barColor = (dimmerValue > 0x60) ? C_RED : C_ACCENT;
+  if (fillW > 0) tft.fillRect(barX + 1, barY + 1, fillW - 2, barH - 2, barColor);
+
+  // Update label
+  tft.fillRect(10, 155, 300, 20, C_BG);
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
+  tft.setTextColor(C_GREY, C_BG);
+  sprintf(tmp, "Bright: %d  (0=%s  15=%s  0x60=MAX)", dimmerValue, "OFF", "MAX");
+  tft.drawString(tmp, 10, 160);
+}
+
+void handleDimmerTouch(int tx, int ty) {
+  int f = footerHit(NULL, "MENU", NULL, tx, ty);
+  if (f == 2) { mode = MODE_MENU; redrawNeeded = true; }
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  MODE: SPEEDOMETER
 // ═══════════════════════════════════════════════════════════════
 
@@ -859,6 +947,8 @@ void drawSpeedoFooter() {
 // ═══════════════════════════════════════════════════════════════
 
 void drawSensors() {
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
   drawHeader("ENGINE SENSORS", NULL);
 
   int cols = 2;
@@ -912,6 +1002,8 @@ void drawSensors() {
 // ═══════════════════════════════════════════════════════════════
 
 void drawSensorPicker() {
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
   drawHeader("SELECT CAN ID", NULL);
 
   if (scanCount == 0) {
@@ -1099,14 +1191,15 @@ void processCanData() {
     }
 
     // ALWAYS capture sensor/speedo values (independent of mode)
-    // 0x158 = ENGINE_DATA: BYTE[4:5]=SPEEDOMETER(MPH*0.01) - PRIMARY speed on Accord 8
+    // 0x158 = ENGINE_DATA: BYTE[4:5]=SPEEDOMETER(km/h*0.01) - PRIMARY speed on Accord 8
     if (msg.id == 0x158 && msg.len >= 6) {
       uint16_t spd = ((uint16_t)msg.data[4] << 8) | msg.data[5];
-      int kph = (int)((float)spd * 0.01f * 1.60934f);
+      int kph = (int)((float)spd * 0.01f);
       if (kph != prevSpeedoVal) { prevSpeedoVal = kph; speedoValue = kph; valueUpdateNeeded = true; }
     }
     if (msg.id == 0x17C && msg.len >= 4) { rpmValue = ((uint16_t)msg.data[2] << 8) | msg.data[3]; if (rpmValue != prevRpmVal) { prevRpmVal = rpmValue; valueUpdateNeeded = true; } }
     if (msg.id == 0x324 && msg.len >= 1) { coolantTemp = msg.data[0] - 40; if (coolantTemp != prevCoolantTemp) { prevCoolantTemp = coolantTemp; valueUpdateNeeded = true; } }
+    if (msg.id == 0x294 && msg.len >= 2) { dimmerValue = msg.data[1]; if (dimmerValue != prevBrightness) { prevBrightness = dimmerValue; valueUpdateNeeded = true; } }
     // Configurable sensor slots: check each against incoming messages
     for (int si = 0; si < SENSOR_SLOTS; si++) {
       if (sensorCanId[si] != 0 && msg.id == sensorCanId[si]) {
@@ -1160,6 +1253,7 @@ void drawScreen() {
     case MODE_LIST:          drawList(); break;
     case MODE_MONITOR_RAW:   drawMonitorRaw(); break;
     case MODE_SPEEDO:        drawSpeedo(); break;
+    case MODE_DIMMER:        drawDimmer(); break;
     case MODE_SENSORS:       drawSensors(); break;
     case MODE_SENSOR_PICK:   drawSensorPicker(); break;
     default:                 drawMenu(); break;
@@ -1182,6 +1276,7 @@ void handleTouch() {
     case MODE_MONITOR_RAW:   handleMonitorRawTouch(tx, ty); break;
     case MODE_SENSORS:      handleSensorsTouch(tx, ty); break;
     case MODE_SENSOR_PICK:  handleSensorPickerTouch(tx, ty); break;
+    case MODE_DIMMER:       handleDimmerTouch(tx, ty); break;
     case MODE_SPEEDO: {
       // Custom footer buttons: SPD(6), BTH(52), RPM(98), MENU(SCR_W-56)
       int bw = 44; int gap = 4;
@@ -1301,6 +1396,7 @@ void loop() {
     switch (mode) {
       case MODE_MONITOR_RAW:   updateMonitorRawValue(); break;
       case MODE_SPEEDO:        updateSpeedoValue(); break;
+      case MODE_DIMMER:        updateDimmerValue(); break;
       case MODE_SENSORS:       updateSensorsValue(); break;
       default: break;
     }

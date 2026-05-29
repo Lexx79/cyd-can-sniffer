@@ -1,9 +1,9 @@
 # CAN-Multitool — Onboard Diagnostic Center on CYD
 
-**Version: 2.0**
+**Version: 2.2**
 
 [![ESP32](https://img.shields.io/badge/ESP32-2432S028-blue)]()
-[![Version](https://img.shields.io/badge/version-2.0-green)](.)
+[![Version](https://img.shields.io/badge/version-2.2-green)](.)
 [![License](https://img.shields.io/badge/license-MIT-green)](.)
 
 From a simple CAN ID scanner to a full **onboard diagnostic center**.
@@ -68,7 +68,7 @@ MONITOR: 0x158
 HEX: 00 11 22 33 44 55 66 77
 IDX: 0  1  2  3  4  5  6  7
 ```
-- Large hex bytes (FreeSansBold12pt7b)
+- Hex bytes in FreeSansBold9pt7b
 - Byte index labels (FreeSansBold9pt7b)
 - Diff-based redraw — only updates when data changes
 - Footer: [MENU] button
@@ -76,20 +76,36 @@ IDX: 0  1  2  3  4  5  6  7
 ### 4. SPEEDOMETER ✅
 Full-screen digital speedometer and tachometer. Three sub-modes via footer buttons:
 
-| Mode | Display | Font7 size |
-|------|---------|-----------|
-| SPD | Speed from **0x158** ENGINE_DATA (MPH×0.01→km/h) | 2 |
-| RPM | RPM from **0x17C** (bytes 2-3 uint16) | 2 |
-| BTH | Speed + RPM stacked | 1 each |
+| Mode | Display | Source |
+|------|---------|--------|
+| SPD | Speed km/h | **0x158** BYTE[4:5] (KMH×0.01) |
+| RPM | RPM | **0x17C** bytes 2-3 uint16 |
+| BTH | Speed + RPM stacked | Both |
 
 Footer: `[SPD] [BTH] [RPM] [MENU]` — active mode highlighted.
 
-### 5. SENSORS ✅
+### 5. DIMMER ✅
+Real-time dash brightness monitor from 0x294 SCM_FEEDBACK BYTE[1].
+
+**Display:**
+```
+         DASH DIMMER
+
+           0x0A        ← big Font7 hex value
+
+  ████████░░░░░░░░░░   ← brightness bar
+  Bright: 10 (0=OFF  15=MAX  0x60=MAX)
+```
+- Large 7-segment hex display (Font7)
+- Horizontal bar + live updates via diff-based redraw
+- Footer: [MENU]
+
+### 6. SENSORS ✅
 6-cell grid showing live engine sensor values. Tap a cell to assign a CAN ID from scanner buffer.
 
 | Cell | Sensor | CAN ID | Decoder |
 |------|--------|--------|---------|
-| 1 | Speed | **0x158** | BYTE[4:5]=SPEEDOMETER(MPH×0.01→km/h) |
+| 1 | Speed | **0x158** | BYTE[4:5]=KMH×0.01 |
 | 2 | RPM | **0x17C** | byte[2:3] uint16 |
 | 3 | Coolant | **0x324** | byte[0]-40 °C |
 | 4 | Fuel | 0x1A6 | byte[3] raw 0-105% |
@@ -98,11 +114,9 @@ Footer: `[SPD] [BTH] [RPM] [MENU]` — active mode highlighted.
 
 Cells 1-3 use dedicated decoders (-1 = auto). Cells 4-6 are raw data byte. Tap any empty cell → picker menu with all scanned IDs.
 
-### 6. CAN LOGGER ⏳ planned
-### 7. OBD2 SCANNER ⏳ planned
-### 8. ECU SCAN ⏳ planned
-### 9. SLCAN BRIDGE ⏳ planned
-### 10. CAN EMULATOR ⏳ planned
+### 7. CAN LOGGER ⏳ planned
+### 8. OBD2 SCANNER ⏳ planned
+### 9. ECU SCAN ⏳ planned
 
 ---
 
@@ -143,16 +157,16 @@ Cells 1-3 use dedicated decoders (-1 = auto). Cells 4-6 are raw data byte. Tap a
 
 | CAN ID | Name | Data |
 |--------|------|------|
-| **0x158** | ENGINE_DATA | BYTE[0:1]=RPM, BYTE[2:3]=??? , **BYTE[4:5]=SPEED(MPH×0.01)**, BYTE[6]=DISTANCE(0.2mi) |
+| **0x158** | ENGINE_DATA | BYTE[0:1]=RPM, BYTE[2:3]=??? , **BYTE[4:5]=SPEED(km/h×0.01)**, BYTE[6]=Trip(km) |
 | **0x17C** | RPM | BYTE[0]=Throttle, BYTE[2:3]=RPM(uint16) |
-| **0x309** | CAR_SPEED (alt) | BYTE[0]=Speed km/h (raw) — alternate/less reliable source |
+| **0x309** | CAR_SPEED (alt) | BYTE[0]=Speed km/h (raw) — alternate source, not primary |
 | **0x324** | TEMPERATURES | BYTE[0]=Coolant(-40), BYTE[1]=Intake(-40) |
 | **0x1A6** | SCM_BUTTONS | BYTE[3]=Fuel(%), BYTE[5]=Fuel(map), BYTE[1]=Cruise |
 | **0x13C** | GAS_PEDAL | BYTE[0]=Pedal raw 0-255 |
 | **0x191** | GEAR | BYTE[0] & 0x07 = Gear position |
 | **0x1A4** | BRAKE | BYTE[0]=Brake % |
 | **0x18E** | ACCEL | BYTE[0/1]=Lateral/Longitudinal G (int8×0.01) |
-| **0x294** | BODY_INFO | BYTE[0]=Turn signals, BYTE[5:7]=Odometer (24-bit) |
+| **0x294** | SCM_FEEDBACK | BYTE[0]=Turn signals(WIPERS), **BYTE[1]=DIMMER**(0=тускло..15=ярко с фарами, 0x60=максимум, 16=фары выкл), BYTE[3:5]=ODOMETER(uint24, km) |
 | **0x255** | WHEEL_SPEEDS | 4× uint16 = individual wheel speeds |
 
 ### Self-Diagnosis Mode
@@ -194,6 +208,7 @@ All live-update modes use **previous value tracking** to avoid unnecessary redra
 | Mode | Tracked values | Trigger |
 |------|---------------|---------|
 | Speedometer | `prevSpeedoVal`, `prevRpmVal` | Any change in value |
+| Dimmer | `prevBrightness` | Any change in value |
 | Monitor | `prevMonitorBytes[8]`, `monChanged` | Any byte change |
 | Sensors | `prevCoolantTemp`, `prevFuelLevel`, `prevThrottlePos`, `prevBatteryVolt` | Any change in value |
 
@@ -226,6 +241,8 @@ Only `valueUpdateNeeded = true` triggers redraw — no timer-based flicker.
 
 ---
 
+| v2.0-patch2 | 27.05 | Font7 + FreeSansBold overhaul + sensor picker |
+**Current version:** 2.0
 ## Version History
 
 | Tag | Date | Description |
@@ -236,12 +253,12 @@ Only `valueUpdateNeeded = true` triggers redraw — no timer-based flicker.
 | **v2.0-alpha** | **27.05** | CAN-Multitool: menu + 6 modes + decoder (11 IDs) |
 | v2.0-patch1 | 27.05 | 4 real-hardware bugs fixed + diff-based redraw |
 | v2.0-patch2 | 27.05 | Font7 + FreeSansBold overhaul + sensor picker |
-| **v2.0** | **28.05** | **Final: speed 0x158, MONITOR RAW only, service manual, canny.ru data** |
+| **v2.2** | **29.05** | **DIMMER mode + menu 2×3 + speed KMH fix + font corruption fix** |
 
 ---
 
 **Authors:** [Kiro (AI)](https://github.com/kiro) + [Sergey / Lexx79](https://github.com/Lexx79)  
 **Started:** May 25th, 2026  
-**Current version:** 2.0  
+**Current version:** 2.2  
 **Test vehicle:** Honda Accord 8 (2008–2012) P-CAN 500 kbps  
 **GitHub:** [Lexx79/cyd-can-sniffer](https://github.com/Lexx79/cyd-can-sniffer)
