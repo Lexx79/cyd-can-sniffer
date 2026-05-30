@@ -2,6 +2,8 @@
 
 **Version: 2.2**
 
+*Last updated: 2026-05-30 — Added AUTO FILTER mode, new CAN IDs (0x164 LIGHT_CONTROL + blinkers fix on 0x294), SCAN flicker fix*
+
 [![ESP32](https://img.shields.io/badge/ESP32-2432S028-blue)]()
 [![Version](https://img.shields.io/badge/version-2.2-green)](.)
 [![License](https://img.shields.io/badge/license-MIT-green)](.)
@@ -117,9 +119,27 @@ Real-time dash brightness monitor from 0x294 SCM_FEEDBACK BYTE[1].
 
 Cells 1-3 use dedicated decoders (-1 = auto). Cells 4-6 are raw data byte. Tap any empty cell → picker menu with all scanned IDs.
 
-### 7. CAN LOGGER ⏳ planned
-### 8. OBD2 SCANNER ⏳ planned
-### 9. ECU SCAN ⏳ planned
+### 7. AUTO FILTER ✅
+Automatic CAN data filter that learns stable bytes and detects only meaningful changes.
+
+**Two phases:**
+1. **LEARNING (30s)**: Captures every CAN ID on the bus, builds a template of stable byte values. Progress bar + ID counter shown live.
+2. **SEARCHING**: Compares current data against learned template — only logs events where a stable byte changes value.
+
+**Display:**
+```
+SEARCHING... act now!
+Watching 12 IDs
+0x158 b[4]: 0x1F->0x20
+0x294 b[1]: 0x61->0x62
+```
+- Events list scrolls within available space, old events pushed up automatically
+- Footer: [CLEAR] [MENU]
+- Access: AUTO button in MONITOR mode footer
+
+### 8. CAN LOGGER ⏳ planned
+### 9. OBD2 SCANNER ⏳ planned
+### 10. ECU SCAN ⏳ planned
 
 ---
 
@@ -169,8 +189,9 @@ Cells 1-3 use dedicated decoders (-1 = auto). Cells 4-6 are raw data byte. Tap a
 | **0x191** | GEAR | BYTE[0] & 0x07 = Gear position |
 | **0x1A4** | BRAKE | BYTE[0]=Brake % |
 | **0x18E** | ACCEL | BYTE[0/1]=Lateral/Longitudinal G (int8×0.01) |
-| **0x294** | SCM_FEEDBACK | BYTE[0]=Turn signals(WIPERS), **BYTE[1]=DIMMER**(0x00=dim 0x01..0x15=mid 0x96=MAX), BYTE[3:5]=ODOMETER(uint24, km) |
+| **0x294** | SCM_FEEDBACK | **BYTE[0]=BLINKERS**(0x00=off 0x20=LEFT 0x40=RIGHT), BYTE[0]&0x18=WIPER_MODE, **BYTE[1]=DIMMER**(0x00=dim 0x01..0x15=mid 0x96=MAX), BYTE[3:5]=ODOMETER(uint24, km) |
 | **0x255** | WHEEL_SPEEDS | 4× uint16 = individual wheel speeds |
+| **0x164** | LIGHT_CONTROL | BYTE[0]bit0=LOW_BEAM(1=on), bit5=CRUISE_CTRL(1=on), BYTE[2]=FOG_LIGHTS(0x00=off 0x20=on) |
 
 ### Self-Diagnosis Mode
 1. Hold SEL/RESET button on cluster
@@ -257,6 +278,7 @@ Only `valueUpdateNeeded = true` triggers redraw — no timer-based flicker.
 | v2.0-patch1 | 27.05 | 4 real-hardware bugs fixed + diff-based redraw |
 | v2.0-patch2 | 27.05 | Font7 + FreeSansBold overhaul + sensor picker |
 | **v2.2** | **29-30.05** | **DIMMER mode + menu 2×3 + 0x96=MAX dimmer + speedo anti-flicker + SCR_W fill fix** |
+| **v2.2-patch1** | **30.05** | **AUTO FILTER mode + SCAN flicker fix + LIGHT_CONTROL(0x164) + 0x294 blinkers corrected** |
 
 ---
 

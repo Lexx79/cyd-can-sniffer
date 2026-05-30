@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 //  CAN-Multitool - onboard diagnostic center on CYD
-//  Version 2.2
+//  Version 2.2-patch1
 //  Authors: Kiro (⚡) + Sergey (@Lexxabk)
 //  Car: Honda Accord 8 (2008-2012)
 //  Hardware: ESP32-2432S028 (CYD) + MCP2515+TJA1050
@@ -71,6 +71,8 @@ struct ScanEntry {
 };
 ScanEntry scanBuf[MAX_IDS];
 int scanCount = 0;
+int lastScanCount = -1;  // for SCAN inline update
+int scanFoundNumX = 75;  // x-offset for Found number (set in drawScanner)
 int sortedIdx[MAX_IDS];
 int sortedCount = 0;
 unsigned long scanStartMs = 0;
@@ -100,6 +102,33 @@ const char* sensorUnits[SENSOR_SLOTS] = {"km/h", "", " C", " %", " %", " V"};
 int prevSpeedoVal = -1;
 int prevRpmVal = -1;
 int prevBrightness = -1;
+// -- AUTO FILTER globals --
+#define MAX_AUTO_IDS 80
+#define MAX_AUTO_EVENTS 40
+
+struct AutoFilterEntry {
+  uint32_t id;
+  uint8_t templ[8];
+  uint8_t len;
+  bool stable[8];
+  bool used;
+};
+
+struct AutoFilterEvent {
+  uint32_t id;
+  uint8_t bIdx;
+  uint8_t oldV;
+  uint8_t newV;
+};
+
+AutoFilterEntry autoIds[MAX_AUTO_IDS];
+AutoFilterEvent autoEvts[MAX_AUTO_EVENTS];
+int autoIdCnt = 0, autoEvtCnt = 0;
+bool autoLearning = false, autoSearching = false;
+unsigned long autoLearnStartMs = 0;
+unsigned long lastAutoLearnDraw = 0;
+#define AUTO_LEARN_MS 30000UL
+
 int prevRawVal = -1;
 uint8_t prevMonitorBytes[8] = {0};
 bool prevMonitorHasData = false;
@@ -117,6 +146,7 @@ enum Mode : uint8_t {
   MODE_SPEEDO,
   MODE_SENSORS,
   MODE_SENSOR_PICK,
+  MODE_AUTO_FILTER,
   MODE_DIMMER,
   MODE_BLOCKFIND,
   MODE_LOGGER,
@@ -419,7 +449,7 @@ void decodeMessage(unsigned long id, uint8_t* data, int len) {
 void drawMenu() {
   tft.setFreeFont(&FreeSansBold9pt7b);
   tft.setTextSize(1);
-  drawHeader("CAN-MULTITOOL", "v2.2");
+  drawHeader("CAN-MULTITOOL", "v2.2");  // patch1: AUTO FILTER + 0x164 + blinkers
 
   int itemsCount = MENU_ITEM_COUNT;
 
@@ -517,26 +547,25 @@ void drawScanner() {
   sprintf(tmp, "SCANNING: %lds", (scanDurationMs - (millis() - scanStartMs)) / 1000);
   drawHeader(tmp, NULL);
 
-  // Pulse dot
+  // Pulse dot + static label
   tft.fillCircle(18, 50, 4, pulseState ? C_GREEN : C_HEADER);
   tft.setTextColor(C_GREY, C_BG);
-  tft.drawString("Listening for CAN IDs...", 30, 46);
+  tft.drawString("Listening for CAN IDs...", 30, 40);
 
   // Progress bar
   int pct = ((millis() - scanStartMs) * 300) / scanDurationMs;
   if (pct > 300) pct = 300;
-  tft.fillRect(10, 80, 300, 20, C_LIST_BG);
-  tft.drawRect(10, 80, 300, 20, C_WHITE);
-  if (pct > 0) tft.fillRect(10, 80, pct, 20, C_ACCENT);
+  tft.fillRect(10, 70, 300, 26, C_LIST_BG);
+  tft.drawRect(10, 70, 300, 26, C_WHITE);
+  if (pct > 0) tft.fillRect(10, 70, pct, 26, C_ACCENT);
 
-  // ID counter
-  sprintf(tmp, "Found: %d IDs", scanCount);
-  tft.setTextSize(1);
+  // ID counter — static label, only number updates in loop
   tft.setTextColor(C_WHITE, C_BG);
-  tft.drawString(tmp, 10, 110);
-
-  tft.setTextSize(2);
-  tft.setTextColor(C_GREY, C_BG);
+  int lw = tft.textWidth("Found: ");
+  tft.drawString("Found: ", 10, 120);      // static label, never touched again
+  tft.drawString("0", 10 + lw, 120);        // initial number
+  lastScanCount = -1;  // force redraw on first loop iteration
+  scanFoundNumX = 10 + lw;  // store for loop updates
 
   // Footer with STOP button
   drawFooter("STOP", NULL, NULL);
@@ -666,9 +695,24 @@ void handleListTouch(int tx, int ty) {
 #define MON_HEX_Y    50
 
 void drawMonitorRaw() {
+  // Auto-select first scanned ID if monitorId is 0
+  if (monitorId == 0 && scanCount > 0) {
+    monitorId = scanBuf[0].id;
+    monitorHasData = false;
+    prevMonitorHasData = false;
+  }
   char tmp[48];
   sprintf(tmp, "MONITOR: 0x%03lX", monitorId);
   drawHeader(tmp, NULL);
+
+  // Navigation arrows for ID list in header zone
+  if (scanCount > 1) {
+    tft.setFreeFont(&FreeSansBold9pt7b);
+    tft.setTextSize(1);
+    tft.setTextColor(C_GREY, C_HEADER);
+    tft.drawString("<", 10, 8);
+    tft.drawString(">", SCR_W - 24, 8);
+  }
 
   // Hex bytes
   tft.setFreeFont(&FreeSansBold9pt7b);
@@ -696,7 +740,7 @@ void drawMonitorRaw() {
     tft.drawString(tmp, 10, 50 + 28);
   }
 
-  drawFooter("BACK", NULL, NULL);
+  drawFooter("AUTO", "BACK", NULL);
 }
 
 void updateMonitorRawValue() {
@@ -727,8 +771,62 @@ void updateMonitorRawValue() {
 }
 
 void handleMonitorRawTouch(int tx, int ty) {
-  int f = footerHit("BACK", NULL, NULL, tx, ty);
-  if (f == 1) { mode = MODE_LIST; redrawNeeded = true; }
+  // Left/right tap on header area to navigate scanned IDs
+  if (scanCount > 0 && ty < 30) {
+    // Arrow zones: left 80px, right 80px, center shows MONITOR name
+    if (tx < 80) {
+      // Previous ID
+      int ci = -1;
+      for (int i = 0; i < scanCount; i++) {
+        if (scanBuf[i].id == monitorId) { ci = i; break; }
+      }
+      if (ci > 0) {
+        monitorId = scanBuf[ci - 1].id;
+      } else if (ci < 0) {
+        monitorId = scanBuf[0].id;
+      } else {
+        monitorId = scanBuf[scanCount - 1].id; // wrap to last
+      }
+      monitorHasData = false;
+      prevMonitorHasData = false;
+      redrawNeeded = true;
+      return;
+    }
+    if (tx > SCR_W - 80) {
+      // Next ID
+      int ci = -1;
+      for (int i = 0; i < scanCount; i++) {
+        if (scanBuf[i].id == monitorId) { ci = i; break; }
+      }
+      if (ci >= 0 && ci < scanCount - 1) {
+        monitorId = scanBuf[ci + 1].id;
+      } else if (ci < 0) {
+        monitorId = scanBuf[0].id;
+      } else {
+        monitorId = scanBuf[0].id; // wrap to first
+      }
+      monitorHasData = false;
+      prevMonitorHasData = false;
+      redrawNeeded = true;
+      return;
+    }
+  }
+  // Footer buttons
+  int f = footerHit("AUTO", "BACK", NULL, tx, ty);
+  if (f == 1) {
+    // AUTO FILTER
+    autoLearning = true;
+    autoSearching = false;
+    autoIdCnt = 0;
+    autoEvtCnt = 0;
+    autoLearnStartMs = millis();
+    mode = MODE_AUTO_FILTER;
+    redrawNeeded = true;
+  } else if (f == 2) {
+    // BACK to LIST
+    mode = MODE_LIST;
+    redrawNeeded = true;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -811,6 +909,167 @@ void handleDimmerTouch(int tx, int ty) {
   if (f == 2) { mode = MODE_MENU; redrawNeeded = true; }
 }
 
+
+// =============================================================
+//  MODE: AUTO FILTER (learn stable bytes, then detect changes)
+// =============================================================
+void drawAutoFilter() {
+  drawHeader("AUTO FILTER", NULL);
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
+  
+  if (autoLearning) {
+    // Phase 1: learning in progress
+    unsigned long elapsed = millis() - autoLearnStartMs;
+    int remain = (AUTO_LEARN_MS - elapsed) / 1000;
+    if (remain < 0) remain = 0;
+    
+    char tmp[50];
+    sprintf(tmp, "LEARNING... %ds", remain);
+    tft.setTextColor(C_ACCENT, C_BG);
+    tft.drawString(tmp, 10, 50);
+    
+    sprintf(tmp, "IDs captured: %d", autoIdCnt);
+    tft.setTextColor(C_GREY, C_BG);
+    tft.drawString(tmp, 10, 80);
+    
+    // Show progress bar
+    int barW = 300, barH = 20, barX = 10, barY = 110;
+    float pct = (float)elapsed / AUTO_LEARN_MS;
+    if (pct > 1.0f) pct = 1.0f;
+    tft.drawRect(barX, barY, barW, barH, C_DIVIDER);
+    if (pct > 0) tft.fillRect(barX + 1, barY + 1, (int)((barW - 2) * pct), barH - 2, C_ACCENT);
+    
+    tft.drawString("Remain still, do nothing", 10, 145);
+    tft.drawString("Wait for timer to finish", 10, 165);
+    
+    drawFooter(NULL, "CANCEL", NULL);
+    
+  } else if (!autoSearching) {
+    // Phase 1 complete, waiting for SEARCH
+    char tmp[50];
+    sprintf(tmp, "LEARNED: %d IDs", autoIdCnt);
+    tft.setTextColor(C_ACCENT, C_BG);
+    tft.drawString(tmp, 10, 50);
+    
+    // Count total stable bytes
+    int stableTotal = 0;
+    for (int i = 0; i < autoIdCnt; i++) {
+      for (int b = 0; b < autoIds[i].len; b++) {
+        if (autoIds[i].stable[b]) stableTotal++;
+      }
+    }
+    sprintf(tmp, "Stable bytes: %d", stableTotal);
+    tft.setTextColor(C_GREY, C_BG);
+    tft.drawString(tmp, 10, 80);
+    
+    sprintf(tmp, "Unstable bytes: ~%d", autoIdCnt * 8 - stableTotal);
+    tft.drawString(tmp, 10, 100);
+    
+    tft.setTextColor(C_WHITE, C_BG);
+    tft.drawString("Press SEARCH to start monitoring", 10, 140);
+    tft.setTextColor(C_GREY, C_BG);
+    tft.drawString("Then perform actions (turn signal,", 10, 160);
+    tft.drawString("open door, press buttons, etc.)", 10, 177);
+    
+    drawFooter("SEARCH", "MENU", NULL);
+    
+  } else {
+    // Phase 2: actively searching
+    tft.setTextColor(C_ACCENT, C_BG);
+    tft.drawString("SEARCHING... act now!", 10, 50);
+    
+    char tmp[50];
+    sprintf(tmp, "Watching %d IDs", autoIdCnt);
+    tft.setTextColor(C_GREY, C_BG);
+    tft.drawString(tmp, 10, 75);
+    
+    // Show last events
+    int y = 100;
+    for (int i = max(0, autoEvtCnt - 10); i < autoEvtCnt; i++) {
+      sprintf(tmp, "0x%03lX b[%d]: 0x%02X->0x%02X", 
+              autoEvts[i].id, autoEvts[i].bIdx, autoEvts[i].oldV, autoEvts[i].newV);
+      tft.setTextColor(C_GREEN, C_BG);
+      tft.drawString(tmp, 10, y);
+      y += 16;
+      if (y > SCR_H - FTR_H - 4) break;
+    }
+    
+    drawFooter(NULL, "CLEAR", "MENU");
+  }
+}
+
+void updateAutoFilterValue() {
+  // Only update events area (searching phase). Full redraw only for phase transitions.
+  if (!autoSearching || autoEvtCnt == 0) return;
+  
+  // Inline redraw of event list only
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextSize(1);
+  
+  int y = 100;
+  char tmp[50];
+  // Clear events area
+  tft.fillRect(10, 100, 300, SCR_H - 130, C_BG);
+  
+  for (int i = max(0, autoEvtCnt - 10); i < autoEvtCnt; i++) {
+    sprintf(tmp, "0x%03lX b[%d]: 0x%02X->0x%02X", 
+            autoEvts[i].id, autoEvts[i].bIdx, autoEvts[i].oldV, autoEvts[i].newV);
+    tft.setTextColor(C_GREEN, C_BG);
+    tft.drawString(tmp, 10, y);
+    y += 16;
+    if (y > SCR_H - FTR_H - 4) break;
+  }
+}
+
+void handleAutoFilterTouch(int tx, int ty) {
+  if (autoLearning) {
+    // Learning phase: drawFooter(NULL, "CANCEL", NULL) -> btn2 = CANCEL
+    int f = footerHit(NULL, "CANCEL", NULL, tx, ty);
+    if (f == 2) {
+      autoLearning = false;
+      autoSearching = false;
+      autoIdCnt = 0;
+      autoEvtCnt = 0;
+      mode = MODE_MONITOR_RAW;
+      redrawNeeded = true;
+    }
+    return;
+  }
+  
+  if (!autoSearching) {
+    // Post-learning: drawFooter("SEARCH", "MENU", NULL) -> btn1=SEARCH btn2=MENU
+    int f = footerHit("SEARCH", "MENU", NULL, tx, ty);
+    if (f == 1) {
+      // SEARCH
+      autoSearching = true;
+      autoEvtCnt = 0;
+      redrawNeeded = true;
+    } else if (f == 2) {
+      mode = MODE_MONITOR_RAW;
+      redrawNeeded = true;
+    }
+    return;
+  }
+  
+  // Searching phase: drawFooter(NULL, "CLEAR", "MENU") -> btn2=CLEAR btn3=MENU
+  int f = footerHit(NULL, "CLEAR", "MENU", tx, ty);
+  if (f == 2) {
+    // CLEAR
+    autoEvtCnt = 0;
+    redrawNeeded = true;
+  } else if (f == 3) {
+    // MENU - exit to MONITOR
+    autoSearching = false;
+    autoLearning = false;
+    autoIdCnt = 0;
+    autoEvtCnt = 0;
+    mode = MODE_MONITOR_RAW;
+    redrawNeeded = true;
+  }
+}
+
+
 // ═══════════════════════════════════════════════════════════════
 //  MODE: SPEEDOMETER
 // ═══════════════════════════════════════════════════════════════
@@ -828,6 +1087,7 @@ void drawSpeedo() {
   int mainY, tw;
 
   if (speedoMode == SPEEDO_MODE_SPEED) {
+    tft.fillRect(0, 70, SCR_W, 60, C_BG);
     mainY = 80;
     tft.setTextFont(7);
     tft.setTextSize(2);
@@ -837,6 +1097,7 @@ void drawSpeedo() {
     tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
 
   } else if (speedoMode == SPEEDO_MODE_RPM) {
+    tft.fillRect(0, 70, SCR_W, 60, C_BG);
     mainY = 80;
     tft.setTextFont(7);
     tft.setTextSize(2);
@@ -846,6 +1107,7 @@ void drawSpeedo() {
     tft.drawString(tmp, (SCR_W - tw) / 2, mainY);
 
   } else if (speedoMode == SPEEDO_MODE_BOTH) {
+    tft.fillRect(0, 40, SCR_W, 170, C_BG);
     mainY = 50;
     tft.setTextFont(7);
     tft.setTextSize(1);
@@ -1217,7 +1479,7 @@ void processCanData() {
     }
     if (msg.id == 0x17C && msg.len >= 4) { rpmValue = ((uint16_t)msg.data[2] << 8) | msg.data[3]; if (rpmValue != prevRpmVal) { prevRpmVal = rpmValue; valueUpdateNeeded = true; } }
     if (msg.id == 0x324 && msg.len >= 1) { coolantTemp = msg.data[0] - 40; if (coolantTemp != prevCoolantTemp) { prevCoolantTemp = coolantTemp; valueUpdateNeeded = true; } }
-    if (msg.id == 0x294 && msg.len >= 2) { dimmerValue = msg.data[1]; if (dimmerValue != prevBrightness) { prevBrightness = dimmerValue; valueUpdateNeeded = true; } }
+    if (msg.id == 0x294 && msg.len >= 2) { dimmerValue = msg.data[1]; if (dimmerValue != prevBrightness) { valueUpdateNeeded = true; } }
     // Configurable sensor slots: check each against incoming messages
     for (int si = 0; si < SENSOR_SLOTS; si++) {
       if (sensorCanId[si] != 0 && msg.id == sensorCanId[si]) {
@@ -1234,6 +1496,49 @@ void processCanData() {
         if (sensorValue[si] != prevSensorValue[si]) {
           prevSensorValue[si] = sensorValue[si];
           if (mode == MODE_SENSORS) valueUpdateNeeded = true;
+        }
+      }
+    }
+
+    // AUTO FILTER capture (independent of mode, always active)
+    if (autoLearning || autoSearching) {
+      int ai = -1;
+      for (int x = 0; x < autoIdCnt; x++) {
+        if (autoIds[x].id == msg.id) { ai = x; break; }
+      }
+      if (ai < 0) {
+        if (autoIdCnt < MAX_AUTO_IDS) {
+          ai = autoIdCnt++;
+          autoIds[ai].id = msg.id;
+          autoIds[ai].len = (msg.len < 8) ? msg.len : 8;
+          for (int b = 0; b < autoIds[ai].len; b++) {
+            autoIds[ai].templ[b] = msg.data[b];
+            autoIds[ai].stable[b] = true;
+          }
+          autoIds[ai].used = true;
+        }
+      } else {
+        uint8_t l = (msg.len < 8) ? msg.len : 8;
+        if (autoLearning) {
+          for (int b = 0; b < l; b++) {
+            if (b < autoIds[ai].len && msg.data[b] != autoIds[ai].templ[b]) {
+              autoIds[ai].stable[b] = false;
+            }
+          }
+        } else if (autoSearching) {
+          for (int b = 0; b < l; b++) {
+            if (b < autoIds[ai].len && autoIds[ai].stable[b] && msg.data[b] != autoIds[ai].templ[b]) {
+              if (autoEvtCnt < MAX_AUTO_EVENTS) {
+                autoEvts[autoEvtCnt].id = msg.id;
+                autoEvts[autoEvtCnt].bIdx = b;
+                autoEvts[autoEvtCnt].oldV = autoIds[ai].templ[b];
+                autoEvts[autoEvtCnt].newV = msg.data[b];
+                autoEvtCnt++;
+              }
+              autoIds[ai].templ[b] = msg.data[b];
+              valueUpdateNeeded = true;
+            }
+          }
         }
       }
     }
@@ -1270,6 +1575,7 @@ void drawScreen() {
     case MODE_LIST:          drawList(); break;
     case MODE_MONITOR_RAW:   drawMonitorRaw(); break;
     case MODE_SPEEDO:        drawSpeedo(); break;
+    case MODE_AUTO_FILTER:  drawAutoFilter(); break;
     case MODE_DIMMER:        drawDimmer(); break;
     case MODE_SENSORS:       drawSensors(); break;
     case MODE_SENSOR_PICK:   drawSensorPicker(); break;
@@ -1293,6 +1599,7 @@ void handleTouch() {
     case MODE_MONITOR_RAW:   handleMonitorRawTouch(tx, ty); break;
     case MODE_SENSORS:      handleSensorsTouch(tx, ty); break;
     case MODE_SENSOR_PICK:  handleSensorPickerTouch(tx, ty); break;
+    case MODE_AUTO_FILTER:  handleAutoFilterTouch(tx, ty); break;
     case MODE_DIMMER:       handleDimmerTouch(tx, ty); break;
     case MODE_SPEEDO: {
       // Custom footer buttons: SPD(6), BTH(52), RPM(98), MENU(SCR_W-56)
@@ -1393,26 +1700,62 @@ void loop() {
       ? (scanStartMs + scanDurationMs - now) / 1000 : 0;
     int pct = ((now - scanStartMs) * 300) / scanDurationMs;
     if (pct > 300) pct = 300;
-    tft.fillRect(10, 80, 300, 20, C_LIST_BG);
-    tft.drawRect(10, 80, 300, 20, C_WHITE);
-    if (pct > 0) tft.fillRect(10, 80, pct, 20, C_ACCENT);
-    char tmp[24];
-    sprintf(tmp, "Listening...  %2lus", (unsigned long)remain);
-    tft.setFreeFont(&FreeSansBold9pt7b);
-    tft.setTextSize(1);
-    tft.setTextColor(C_WHITE, C_BG);
-    tft.fillRect(10, 100, 300, 14, C_BG);
-    tft.drawString(tmp, 10, 100);
-    sprintf(tmp, "Found: %d IDs", scanCount);
-    tft.drawString(tmp, 10, 115);
+    tft.fillRect(10, 70, 300, 26, C_LIST_BG);
+    tft.drawRect(10, 70, 300, 26, C_WHITE);
+    if (pct > 0) tft.fillRect(10, 70, pct, 26, C_ACCENT);
+    // Update Found number only (static text not touched)
+    if (scanCount != lastScanCount) {
+      lastScanCount = scanCount;
+      char tmp[24];
+      sprintf(tmp, "%d IDs", scanCount);
+      tft.setFreeFont(&FreeSansBold9pt7b);
+      tft.setTextSize(1);
+      tft.setTextColor(C_WHITE, C_BG);
+      tft.fillRect(scanFoundNumX, 118, 200, 18, C_BG);  // clear old number only
+      tft.drawString(tmp, scanFoundNumX, 120);
+    }
   }
 
   // Partial updates for monitor/speedo
+  // AUTO FILTER learning phase timer (inline updates, no full screen flash)
+  if (autoLearning) {
+    // Check expiry
+    if (now - autoLearnStartMs >= AUTO_LEARN_MS) {
+      autoLearning = false;
+      autoSearching = false;
+      redrawNeeded = true;
+    } else if (now - lastAutoLearnDraw >= 250) {
+      lastAutoLearnDraw = now;
+      // Update timer countdown
+      unsigned long remain = (AUTO_LEARN_MS - (now - autoLearnStartMs)) / 1000;
+      char tmp[50];
+      tft.setFreeFont(&FreeSansBold9pt7b);
+      tft.setTextSize(1);
+      sprintf(tmp, "LEARNING... %lus", remain);
+      tft.fillRect(10, 50, 300, 18, C_BG);
+      tft.setTextColor(C_ACCENT, C_BG);
+      tft.drawString(tmp, 10, 50);
+      // Update ID count
+      sprintf(tmp, "IDs captured: %d", autoIdCnt);
+      tft.fillRect(10, 78, 300, 18, C_BG);
+      tft.setTextColor(C_GREY, C_BG);
+      tft.drawString(tmp, 10, 80);
+      // Update progress bar
+      int barW = 300, barH = 20, barX = 10, barY = 110;
+      float pct = (float)(now - autoLearnStartMs) / AUTO_LEARN_MS;
+      if (pct > 1.0f) pct = 1.0f;
+      tft.drawRect(barX, barY, barW, barH, C_DIVIDER);
+      tft.fillRect(barX + 1, barY + 1, barW - 2, barH - 2, C_LIST_BG);
+      if (pct > 0) tft.fillRect(barX + 1, barY + 1, (int)((barW - 2) * pct), barH - 2, C_ACCENT);
+    }
+  }
+  
   if (valueUpdateNeeded) {
     valueUpdateNeeded = false;
     switch (mode) {
       case MODE_MONITOR_RAW:   updateMonitorRawValue(); break;
       case MODE_SPEEDO:        updateSpeedoValue(); break;
+      case MODE_AUTO_FILTER:  updateAutoFilterValue(); break;
       case MODE_DIMMER:        updateDimmerValue(); break;
       case MODE_SENSORS:       updateSensorsValue(); break;
       default: break;
