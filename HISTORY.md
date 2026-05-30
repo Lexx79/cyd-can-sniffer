@@ -194,6 +194,8 @@
 - **Документация**: Excel, README, описание проекта, HISTORY — все обновлены
 - **Релиз v2.2 обновлён**: скопирован в cyd_can_multitool_v2.2/
 
+| v2.2-patch1 | 2026-05-30 | AUTO FILTER mode (learn 30s + stable byte detection), SCAN mode flicker fix (static labels, number-only update), event list clip before footer, new CAN IDs: 0x164 LIGHT_CONTROL (low beam/cruise/fog), 0x294 blinkers corrected (BYTE[0]=0x00 off, 0x20 LEFT, 0x40 RIGHT) |
+
 ### Ключевые решения
 - static переменные для last-drawn — простое и надёжное решение без глобальных флагов
 - Каждый режим (SPD/RPM/BOTH) независимо проверяет свои static-значения
