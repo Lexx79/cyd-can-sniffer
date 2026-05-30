@@ -84,6 +84,8 @@ Full-screen digital speedometer and tachometer. Three sub-modes via footer butto
 
 Footer: `[SPD] [BTH] [RPM] [MENU]` — active mode highlighted.
 
+**Anti-flicker**: Each value uses a `static` last-drawn tracker — speed and RPM redraw independently. A stationary car with idle RPM only updates the RPM digit, not the zero speed. `fillRect` uses full `SCR_W` (320px) to eliminate font-width artifacts between 3 and 4 digit values.
+
 ### 5. DIMMER ✅
 Real-time dash brightness monitor from 0x294 SCM_FEEDBACK BYTE[1].
 
@@ -94,10 +96,11 @@ Real-time dash brightness monitor from 0x294 SCM_FEEDBACK BYTE[1].
            0x0A        ← big Font7 hex value
 
   ████████░░░░░░░░░░   ← brightness bar
-  Bright: 10 (0=OFF  15=MAX  0x60=MAX)
+  0x0A  dim=0  mid=0x15  MAX=0x96
 ```
 - Large 7-segment hex display (Font7)
-- Horizontal bar + live updates via diff-based redraw
+- Horizontal bar (map 0..150) + live updates via diff-based redraw
+- Bar turns red when 0x96 (MAX) is detected
 - Footer: [MENU]
 
 ### 6. SENSORS ✅
@@ -147,11 +150,11 @@ Cells 1-3 use dedicated decoders (-1 = auto). Cells 4-6 are raw data byte. Tap a
 | Bus | Type | Speed | Function |
 |-----|------|-------|----------|
 | **F-CAN (P-CAN)** | HS CAN | **500 kbps** | Powertrain: engine, transmission, ABS, EPS |
-| **B-CAN** | HS CAN | **125 kbps** | Body: lights, wipers, locks, dash dimmer, AC |
+| **B-CAN** | HS CAN | **125 kbps** | Body: lights, wipers, locks, AC. Dimmer signal relayed to P-CAN via gauge cluster gateway |
 
-**Gateway**: Gauge Control Module (instrument cluster) bridges selected signals:
-- **F→B**: Vehicle speed (0x158 from PCM), coolant temp
-- **B→F**: Ignition key, seatbelt, steering wheel buttons
+**Gateway (Instrument Cluster)**: relays selective signals:
+- F→B: Speed (0x158), coolant temp
+- B→F: Ignition, seatbelts, steering wheel buttons (0x296 SCM_BUTTONS)
 
 ### Known P-CAN IDs (Accord 8)
 
@@ -166,7 +169,7 @@ Cells 1-3 use dedicated decoders (-1 = auto). Cells 4-6 are raw data byte. Tap a
 | **0x191** | GEAR | BYTE[0] & 0x07 = Gear position |
 | **0x1A4** | BRAKE | BYTE[0]=Brake % |
 | **0x18E** | ACCEL | BYTE[0/1]=Lateral/Longitudinal G (int8×0.01) |
-| **0x294** | SCM_FEEDBACK | BYTE[0]=Turn signals(WIPERS), **BYTE[1]=DIMMER**(0=тускло..15=ярко с фарами, 0x60=максимум, 16=фары выкл), BYTE[3:5]=ODOMETER(uint24, km) |
+| **0x294** | SCM_FEEDBACK | BYTE[0]=Turn signals(WIPERS), **BYTE[1]=DIMMER**(0x00=dim 0x01..0x15=mid 0x96=MAX), BYTE[3:5]=ODOMETER(uint24, km) |
 | **0x255** | WHEEL_SPEEDS | 4× uint16 = individual wheel speeds |
 
 ### Self-Diagnosis Mode
@@ -253,7 +256,7 @@ Only `valueUpdateNeeded = true` triggers redraw — no timer-based flicker.
 | **v2.0-alpha** | **27.05** | CAN-Multitool: menu + 6 modes + decoder (11 IDs) |
 | v2.0-patch1 | 27.05 | 4 real-hardware bugs fixed + diff-based redraw |
 | v2.0-patch2 | 27.05 | Font7 + FreeSansBold overhaul + sensor picker |
-| **v2.2** | **29.05** | **DIMMER mode + menu 2×3 + speed KMH fix + font corruption fix** |
+| **v2.2** | **29-30.05** | **DIMMER mode + menu 2×3 + 0x96=MAX dimmer + speedo anti-flicker + SCR_W fill fix** |
 
 ---
 

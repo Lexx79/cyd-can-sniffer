@@ -149,3 +149,51 @@
 - Меню: 8 пунктов на 2 страницах
 - Режимов: 6 (SCAN, LIST, MONITOR, SPEEDO, SENSORS, DIMMER) + 1 внутренний (SENSOR_PICK)
 - Рабочих: 5 (DIMMER добавлен)
+
+
+---
+
+## 2026-05-29 (сессия 6 — CAN-Мультитул v2.2: DIMMER + финальные фиксы)
+
+### Что сделано
+- **0x294 BYTE[1] = DIMMER подсветки приборки** (главное открытие сессии)
+  - 0x00 = минимум (тускло)
+  - 0x01..0x15 = плавная регулировка (включены фары)
+  - 0x96 (150) = МАКСИМУМ (прыжок с 0x15)
+  - Захват всегда активен через processCanData()
+- **MODE_DIMMER** — новый режим CAN-Мультитула:
+  - Font7 size 1 hex-цифра (крупно, по центру)
+  - Горизонтальный bar (map 0..150, красный при 0x96)
+  - Информационная строка: dim=0 mid=0x15 MAX=0x96
+  - Diff-based redraw (prevBrightness)
+- **Скорость исправлена**: 0x158 BYTE[4:5] = KMH×0.01 (НЕ MPH)
+  - Убран *1.60934 — данные уже в км/ч
+- **Меню 2×3**: 6 кнопок (152×48px) на страницу, DIMMER на позиции 5
+- **char tmp[10] → char tmp[50]**: устранены все buffer overflow crash
+- **MONITOR**: memcmp по всем 8 байтам (не только byte[0])
+- **MONITOR IDX строка**: теперь тоже обновляется в updateMonitorRawValue()
+- **Все draw* функции** форсируют шрифт (font corruption fix)
+- **Релиз**: v2.0 tag удалён → v2.2 tag создан
+
+### Релизная структура
+- Рабочий код: D:\Gemini\cyd_can_sniffer\cyd_can_multitool\cyd_can_multitool.ino
+- Релиз: D:\Gemini\cyd_can_sniffer\cyd_can_multitool_v2.2\cyd_can_multitool_v2.2.ino
+- Оба внутри D:\Gemini\cyd_can_sniffer\
+
+
+---
+
+## 2026-05-30 (session 7 — Anti-flicker + финальные правки)
+
+### Что сделано
+- **DIMMER точный диапазон**: 0x00→0x15(smooth mid) 0x96=MAX (вместо ошибочного 0x60)
+- **Speedo anti-flicker**: static lastDrawnSpeed/lastDrawnRpm предотвращают перерисовку нулевой скорости при изменении оборотов
+- **BOTH mode независимая перерисовка**: скорость и RPM проверяются раздельно
+- **SCR_W fill fix**: fillRect во всю ширину экрана — артефакты Font7 при смене 3/4 знаков устранены
+- **Убрана надпись** "Rotate dimmer wheel NOW" из режима сканирования
+- **Документация**: Excel, README, описание проекта, HISTORY — все обновлены
+- **Релиз v2.2 обновлён**: скопирован в cyd_can_multitool_v2.2/
+
+### Ключевые решения
+- static переменные для last-drawn — простое и надёжное решение без глобальных флагов
+- Каждый режим (SPD/RPM/BOTH) независимо проверяет свои static-значения
