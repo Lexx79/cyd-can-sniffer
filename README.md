@@ -1,10 +1,10 @@
-# CAN-Multitool — Onboard Diagnostic Center on CYD
+# CAN-Multitool — Onboard Diagnostic Center on ESP32-2432S028 (CYD)
 
 **Version: 2.2**
 
 *Last updated: 2026-05-30 — Added AUTO FILTER mode, new CAN IDs (0x164 LIGHT_CONTROL + blinkers fix on 0x294), SCAN flicker fix*
 
-[![ESP32](https://img.shields.io/badge/ESP32-2432S028-blue)]()
+[![ESP32-2432S028](https://img.shields.io/badge/ESP32-2432S028-CYD-blue)]()
 [![Version](https://img.shields.io/badge/version-2.2-green)](.)
 [![License](https://img.shields.io/badge/license-MIT-green)](.)
 
